@@ -1237,9 +1237,10 @@
         return;
       }
 
-      const headers = ['Time', 'Member', 'Door', 'Card Type', 'Status', 'Reason'];
+      const headers = ['Time', 'User ID', 'Member', 'Door', 'Card Type', 'Status', 'Reason'];
       const rows = analytics.rawEntries.map(e => [
         e.entryTime,
+        e.userId || '',
         e.memberName || '',
         e.doorName || '',
         e.cardName || '',
