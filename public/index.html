@@ -524,9 +524,9 @@
 
         rawAnalytics = await response.json();
 
-        // Initialize doors
+        // Initialize doors (normalize IDs to strings for consistent comparison)
         allDoors = rawAnalytics.byDoor || [];
-        selectedDoors = new Set(allDoors.map(d => d.id));
+        selectedDoors = new Set(allDoors.map(d => String(d.id)));
 
         // Apply filters and render
         applyFilters();
@@ -545,12 +545,10 @@
 
       // Filter raw entries
       let filteredEntries = rawAnalytics.rawEntries.filter(e => {
-        // Door filter
-        if (!selectedDoors.has(e.door) && !selectedDoors.has('unknown')) {
-          if (e.door || !selectedDoors.has('unknown')) {
-            const doorMatch = selectedDoors.has(e.door) || (e.door === undefined && selectedDoors.has('unknown'));
-            if (!doorMatch) return false;
-          }
+        // Door filter (normalize to string for comparison)
+        const doorId = e.door != null ? String(e.door) : 'unknown';
+        if (!selectedDoors.has(doorId)) {
+          return false;
         }
 
         // Status filter
@@ -800,14 +798,15 @@
       container.innerHTML = '';
 
       allDoors.forEach(door => {
+        const doorIdStr = String(door.id);
         const div = document.createElement('div');
         div.className = 'flex items-center gap-2';
         div.innerHTML = `
-          <input type="checkbox" id="door-${door.id}" value="${door.id}"
-            ${selectedDoors.has(door.id) ? 'checked' : ''}
-            onchange="toggleDoor('${door.id}')"
+          <input type="checkbox" id="door-${doorIdStr}" value="${doorIdStr}"
+            ${selectedDoors.has(doorIdStr) ? 'checked' : ''}
+            onchange="toggleDoor('${doorIdStr}')"
             class="w-4 h-4 rounded border-gray-300 text-strongsales-600 focus:ring-strongsales-300">
-          <label for="door-${door.id}" class="text-sm text-gray-700 cursor-pointer flex-1">${door.name}</label>
+          <label for="door-${doorIdStr}" class="text-sm text-gray-700 cursor-pointer flex-1">${door.name}</label>
           <span class="text-xs text-gray-400">${door.total}</span>
         `;
         container.appendChild(div);
@@ -827,7 +826,7 @@
     }
 
     function selectAllDoors() {
-      selectedDoors = new Set(allDoors.map(d => d.id));
+      selectedDoors = new Set(allDoors.map(d => String(d.id)));
       document.querySelectorAll('#door-checkboxes input').forEach(cb => cb.checked = true);
       updateDoorFilterLabel();
       applyFilters();
