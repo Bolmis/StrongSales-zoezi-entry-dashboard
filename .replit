@@ -1,6 +1,6 @@
 run = "npm start"
 entrypoint = "index.js"
-modules = ["web", "nodejs-20"]
+modules = ["web", "nodejs-18"]
 
 [nix]
 channel = "stable-25_05"
@@ -16,5 +16,38 @@ PORT = "3000"
 localPort = 3000
 externalPort = 80
 
+[[ports]]
+localPort = 5000
+externalPort = 80
+
 [agent]
 expertMode = true
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "node index.js"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[userenv]
+
+[userenv.shared]
+PORT = "5000"
