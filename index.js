@@ -128,21 +128,30 @@ function verifyEmbedToken(token) {
   }
 }
 
-// Zoezi API helper
-async function zoeziFetch(domain, apiKey, endpoint) {
+// Zoezi API helper with retry logic
+async function zoeziFetch(domain, apiKey, endpoint, maxRetries = 3) {
   const url = `https://${domain}${endpoint}`;
-  const response = await fetch(url, {
-    headers: {
-      'Authorization': `Basic ${apiKey}`,
-      'Content-Type': 'application/json'
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': apiKey,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Zoezi API error: ${response.status} ${response.statusText}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error(`Attempt ${attempt}/${maxRetries} failed for ${endpoint}:`, error.message);
+      if (attempt === maxRetries) throw error;
+      await new Promise(r => setTimeout(r, attempt * 2000));
     }
-  });
-
-  if (!response.ok) {
-    throw new Error(`Zoezi API error: ${response.status} ${response.statusText}`);
   }
-
-  return response.json();
 }
 
 // Process entry data into analytics
