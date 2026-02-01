@@ -36,7 +36,6 @@ function getSupabase() {
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static('public'));
 
 // Session configuration
 app.use(session({
@@ -665,7 +664,7 @@ app.get('/api/admin/embed-tokens', isAdmin, async (req, res) => {
   }
 });
 
-// Serve main app
+// Serve main app - MUST be before express.static to enforce auth
 app.get('/', (req, res, next) => {
   // Check for embed token in URL
   const token = req.query.token;
@@ -679,6 +678,9 @@ app.get('/', (req, res, next) => {
   }
   next();
 });
+
+// Static files - AFTER root route protection
+app.use(express.static('public'));
 
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
