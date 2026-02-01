@@ -579,6 +579,8 @@
 
     function deduplicateByUserAndDate(entries) {
       // Group entries by user_id + date, keep only the first entry per combination
+      // IMPORTANT: Only deduplicate entries WITH a userId - entries without userId
+      // are different people/cards and should all be kept
       const seen = new Set();
       const deduplicated = [];
 
@@ -586,8 +588,16 @@
       const sorted = [...entries].sort((a, b) => a.entryTime.localeCompare(b.entryTime));
 
       sorted.forEach(entry => {
-        const userId = entry.userId || entry.user_id || 'unknown';
-        const date = entry.entryTime.split(' ')[0]; // Extract date from "YYYY-MM-DD HH:MM:SS"
+        const userId = entry.userId;
+
+        // If no userId, keep the entry (don't deduplicate anonymous/failed entries)
+        if (!userId) {
+          deduplicated.push(entry);
+          return;
+        }
+
+        // Extract date using proper Date parsing (handles both ISO and space-separated formats)
+        const date = new Date(entry.entryTime).toISOString().split('T')[0];
         const key = `${userId}_${date}`;
 
         if (!seen.has(key)) {
@@ -609,7 +619,7 @@
       const uniqueVisitorIds = new Set(entries.filter(e => e.userId).map(e => e.userId));
       const uniqueVisitors = uniqueVisitorIds.size;
 
-      const uniqueDates = new Set(entries.map(e => e.entryTime.split(' ')[0]));
+      const uniqueDates = new Set(entries.map(e => new Date(e.entryTime).toISOString().split('T')[0]));
       const avgEntriesPerDay = uniqueDates.size > 0 ? (totalEntries / uniqueDates.size).toFixed(1) : 0;
 
       // By hour
@@ -618,7 +628,7 @@
         hourCounts[h] = { total: 0, successful: 0 };
       }
       entries.forEach(e => {
-        const hour = parseInt(e.entryTime.split(' ')[1].split(':')[0]);
+        const hour = new Date(e.entryTime).getHours();
         if (hour >= 5 && hour <= 23) {
           hourCounts[hour].total++;
           if (e.success) hourCounts[hour].successful++;
@@ -689,7 +699,7 @@
       // Daily trend
       const dailyCounts = {};
       entries.forEach(e => {
-        const date = e.entryTime.split(' ')[0];
+        const date = new Date(e.entryTime).toISOString().split('T')[0];
         if (!dailyCounts[date]) {
           dailyCounts[date] = { date, total: 0, successful: 0, uniqueVisitors: new Set() };
         }
@@ -715,7 +725,7 @@
             visitorCounts[e.userId] = { id: e.userId, name: e.memberName || `Member #${e.userId}`, entries: 0, lastVisit: null };
           }
           visitorCounts[e.userId].entries++;
-          const entryDate = e.entryTime.split(' ')[0];
+          const entryDate = new Date(e.entryTime).toISOString().split('T')[0];
           if (!visitorCounts[e.userId].lastVisit || entryDate > visitorCounts[e.userId].lastVisit) {
             visitorCounts[e.userId].lastVisit = entryDate;
           }
