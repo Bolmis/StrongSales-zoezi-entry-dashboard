@@ -209,6 +209,14 @@
               <option value="failed">Failed Only</option>
             </select>
 
+            <!-- Unique Visits Toggle -->
+            <label class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl cursor-pointer hover:border-strongsales-300 transition-all">
+              <input type="checkbox" id="unique-visits-toggle" onchange="toggleUniqueVisits()"
+                class="w-4 h-4 rounded border-gray-300 text-strongsales-600 focus:ring-strongsales-300">
+              <span class="text-sm font-medium text-gray-700">Unique Visits</span>
+              <span class="text-xs text-gray-400" title="Count only one entry per person per day">(1/day)</span>
+            </label>
+
             <!-- Export Button -->
             <button onclick="exportCSV()" class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 hover:border-strongsales-300 hover:text-strongsales-600 transition-all">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -403,6 +411,7 @@
     let allDoors = [];
     let currentPage = 1;
     const entriesPerPage = 20;
+    let uniqueVisitsOnly = false;
 
     const config = {
       isIframeMode: window.parent !== window,
@@ -551,12 +560,45 @@
         return true;
       });
 
+      // Unique visits deduplication (AFTER door/status filters)
+      // Keeps only one entry per user per day
+      if (uniqueVisitsOnly) {
+        filteredEntries = deduplicateByUserAndDate(filteredEntries);
+      }
+
       // Recalculate analytics from filtered entries
       analytics = recalculateAnalytics(filteredEntries);
       analytics.club = rawAnalytics.club;
       analytics.dateRange = rawAnalytics.dateRange;
 
       renderDashboard();
+    }
+
+    function toggleUniqueVisits() {
+      uniqueVisitsOnly = document.getElementById('unique-visits-toggle').checked;
+      applyFilters();
+    }
+
+    function deduplicateByUserAndDate(entries) {
+      // Group entries by user_id + date, keep only the first entry per combination
+      const seen = new Set();
+      const deduplicated = [];
+
+      // Sort by time ascending so we keep the first entry of the day
+      const sorted = [...entries].sort((a, b) => a.entryTime.localeCompare(b.entryTime));
+
+      sorted.forEach(entry => {
+        const userId = entry.userId || entry.user_id || 'unknown';
+        const date = entry.entryTime.split(' ')[0]; // Extract date from "YYYY-MM-DD HH:MM:SS"
+        const key = `${userId}_${date}`;
+
+        if (!seen.has(key)) {
+          seen.add(key);
+          deduplicated.push(entry);
+        }
+      });
+
+      return deduplicated;
     }
 
     function recalculateAnalytics(entries) {
