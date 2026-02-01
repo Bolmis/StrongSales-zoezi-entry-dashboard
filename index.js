@@ -154,76 +154,12 @@ async function zoeziFetch(domain, apiKey, endpoint, maxRetries = 3) {
   }
 }
 
-// Fetch entries using stats/generic API (efficient - only fetches needed properties)
-async function fetchEntriesViaStatsApi(domain, apiKey, fromDate, toDate) {
-  const url = `https://${domain}/api/stats/generic`;
+// Fetch entries using idOnly=True (FAST - returns essential data without heavy Member object)
+async function fetchZoeziEntries(domain, apiKey, fromDate, toDate) {
+  const url = `https://${domain}/api/entry/get?fromDate=${fromDate}&toDate=${toDate}&idOnly=True`;
 
-  const requestBody = {
-    reporttype: "list",
-    datatype: "entry",
-    usetime: true,
-    timeproperty: "date",
-    absolutetime: true,
-    absolutetimeunit: "date",
-    absolutetimefrom: fromDate,
-    absolutetimeto: toDate,
-    filter: null,
-    groupproperty: null,
-    properties: [
-      "date",
-      "user.id",
-      "user.name",
-      "user.mail",
-      "door.name",
-      "door.id",
-      "trainingcard.name",
-      "success"
-    ],
-    sort: "date",
-    sortDescending: true
-  };
-
-  console.log(`[stats/generic] Fetching entries from ${domain} (${fromDate} to ${toDate})`);
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Accept': 'application/json',
-      'Content-Type': 'application/json',
-      'Authorization': `Zoezi ${apiKey}`
-    },
-    body: JSON.stringify(requestBody)
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`stats/generic API error: ${response.status} - ${errorText}`);
-  }
-
-  const result = await response.json();
-  console.log(`[stats/generic] Fetched ${result.data?.length || 0} entries`);
-
-  // Transform to normalized format
-  return {
-    data: (result.data || []).map(e => ({
-      entryTime: e.date,
-      success: e.success !== false,
-      user_id: e['user.id'],
-      memberName: e['user.name'] || null,
-      memberEmail: e['user.mail'] || null,
-      door: e['door.id'],
-      doorName: e['door.name'] || `Door ${e['door.id']}`,
-      cardName: e['trainingcard.name'] || 'Unknown',
-      reason: e.reason || null
-    }))
-  };
-}
-
-// Fetch entries using simple entry/get API (slower but always works)
-async function fetchEntriesViaEntryApi(domain, apiKey, fromDate, toDate) {
-  const url = `https://${domain}/api/entry/get?fromDate=${fromDate}&toDate=${toDate}`;
-
-  console.log(`[entry/get] Fetching entries from ${domain} (${fromDate} to ${toDate})`);
+  console.log(`[entry/get idOnly] Fetching entries from ${domain} (${fromDate} to ${toDate})`);
+  const startTime = Date.now();
 
   const response = await fetch(url, {
     headers: {
@@ -238,40 +174,26 @@ async function fetchEntriesViaEntryApi(domain, apiKey, fromDate, toDate) {
   }
 
   const entries = await response.json();
-  console.log(`[entry/get] Fetched ${entries?.length || 0} entries`);
+  const duration = Date.now() - startTime;
+  console.log(`[entry/get idOnly] Fetched ${entries?.length || 0} entries in ${duration}ms`);
 
   // Transform to normalized format
+  // idOnly=True returns: id, user_id, member_id, entryTime, success, door, sites, externaldoorid, reason, cardName
   return {
     data: (entries || []).map(e => ({
+      id: e.id,
       entryTime: e.entryTime,
       success: e.success !== false,
-      user_id: e.user_id,
-      memberName: e.Member ? `${e.Member.firstname || ''} ${e.Member.lastname || ''}`.trim() : null,
-      memberEmail: e.Member?.mail || null,
+      user_id: e.user_id || e.member_id,
+      memberName: null, // Not available with idOnly, but we have user_id
       door: e.door,
-      doorName: e.doorName || `Door ${e.door}`,
+      doorName: `Door ${e.door}`, // Will be enriched later if door names are fetched
+      doorExternalId: e.externaldoorid,
       cardName: e.cardName || 'Unknown',
-      reason: e.reason || null
+      reason: e.reason || null,
+      sites: e.sites || []
     }))
   };
-}
-
-// Main entry fetching function - tries efficient API first, falls back to simple API
-async function fetchZoeziEntries(domain, apiKey, fromDate, toDate) {
-  // Try the efficient stats/generic API first
-  try {
-    const result = await fetchEntriesViaStatsApi(domain, apiKey, fromDate, toDate);
-    if (result.data && result.data.length > 0) {
-      return result;
-    }
-    console.log('[stats/generic] Returned empty data, trying entry/get...');
-  } catch (error) {
-    console.error('[stats/generic] Failed:', error.message);
-    console.log('Falling back to entry/get API...');
-  }
-
-  // Fall back to the simple entry/get API
-  return await fetchEntriesViaEntryApi(domain, apiKey, fromDate, toDate);
 }
 
 // Process entry data into analytics
@@ -625,8 +547,24 @@ app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
     const domain = club.Zoezi_Domain;
     const apiKey = club.Zoezi_Api_Key;
 
-    // Fetch entries using the efficient stats/generic API
+    // Fetch entries using idOnly=True (fast!)
     const entriesResponse = await fetchZoeziEntries(domain, apiKey, fromDate, toDate);
+
+    // Optionally fetch door names to enrich the data
+    try {
+      const resources = await zoeziFetch(domain, apiKey, '/api/resource/get/all');
+      if (resources && resources.length > 0) {
+        const doorMap = {};
+        resources.forEach(r => { doorMap[r.id] = r.name; });
+        entriesResponse.data.forEach(e => {
+          if (e.door && doorMap[e.door]) {
+            e.doorName = doorMap[e.door];
+          }
+        });
+      }
+    } catch (e) {
+      console.log('Could not fetch door names:', e.message);
+    }
 
     // Process analytics
     const analytics = processEntryAnalytics(entriesResponse);
@@ -690,8 +628,24 @@ app.get('/api/embed/analytics', async (req, res) => {
     const domain = club.Zoezi_Domain;
     const apiKey = club.Zoezi_Api_Key;
 
-    // Fetch entries using the efficient stats/generic API
+    // Fetch entries using idOnly=True (fast!)
     const entriesResponse = await fetchZoeziEntries(domain, apiKey, fromDate, toDate);
+
+    // Optionally fetch door names to enrich the data
+    try {
+      const resources = await zoeziFetch(domain, apiKey, '/api/resource/get/all');
+      if (resources && resources.length > 0) {
+        const doorMap = {};
+        resources.forEach(r => { doorMap[r.id] = r.name; });
+        entriesResponse.data.forEach(e => {
+          if (e.door && doorMap[e.door]) {
+            e.doorName = doorMap[e.door];
+          }
+        });
+      }
+    } catch (e) {
+      console.log('Could not fetch door names:', e.message);
+    }
 
     // Process analytics
     const analytics = processEntryAnalytics(entriesResponse);
