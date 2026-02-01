@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Entry Analytics - StrongSales</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+          },
+          colors: {
+            strongsales: {
+              50: '#f5f3ff',
+              100: '#ede9fe',
+              200: '#ddd6fe',
+              300: '#AFACFB',
+              400: '#a78bfa',
+              500: '#8b5cf6',
+              600: '#7c3aed',
+              700: '#6d28d9',
+              800: '#5b21b6',
+              900: '#4c1d95'
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    .gradient-bg { background: linear-gradient(135deg, #AFACFB 0%, #8b5cf6 50%, #6d28d9 100%); }
+    .gradient-text { background: linear-gradient(135deg, #AFACFB 0%, #8b5cf6 50%, #6d28d9 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .glass { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
+    .card-shadow { box-shadow: 0 4px 6px -1px rgba(175, 172, 251, 0.1), 0 2px 4px -2px rgba(175, 172, 251, 0.1); }
+    .card-shadow-lg { box-shadow: 0 10px 15px -3px rgba(175, 172, 251, 0.15), 0 4px 6px -4px rgba(175, 172, 251, 0.1); }
+    .card-shadow-hover:hover { box-shadow: 0 20px 25px -5px rgba(175, 172, 251, 0.15), 0 8px 10px -6px rgba(175, 172, 251, 0.1); }
+
+    .progress-excellent { background: linear-gradient(90deg, #10b981, #34d399); }
+    .progress-good { background: linear-gradient(90deg, #22c55e, #4ade80); }
+    .progress-average { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+    .progress-low { background: linear-gradient(90deg, #ef4444, #f87171); }
+
+    .loading-spinner {
+      border: 3px solid rgba(175, 172, 251, 0.2);
+      border-top: 3px solid #AFACFB;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+    .multiselect-dropdown { position: relative; }
+    .multiselect-dropdown .dropdown-content {
+      display: none; position: absolute; right: 0; top: 100%; margin-top: 0.5rem;
+      background: white; border-radius: 0.75rem; box-shadow: 0 10px 40px rgba(0,0,0,0.15);
+      z-index: 100; min-width: 280px; max-height: 400px; overflow-y: auto;
+    }
+    .multiselect-dropdown.open .dropdown-content { display: block; }
+
+    .status-badge { display: inline-flex; align-items: center; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
+    .status-success { background: #dcfce7; color: #166534; }
+    .status-failed { background: #fee2e2; color: #991b1b; }
+
+    /* Custom scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb { background: #AFACFB; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #8b5cf6; }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <!-- Header -->
+  <header id="header" class="gradient-bg text-white">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        <div class="flex items-center gap-4">
+          <img src="/Strongsales%20logo%20WHITE.png" alt="StrongSales" class="h-8 sm:h-10 w-auto">
+          <div class="hidden sm:block">
+            <span class="text-lg font-semibold">Entry Analytics</span>
+            <span class="text-white/60 text-sm ml-2">Powered by Zoezi</span>
+          </div>
+        </div>
+        <a href="/logout" class="text-white/80 hover:text-white text-sm font-medium transition-colors">
+          Logout
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Controls Bar -->
+  <div id="controls-bar" class="sticky top-0 z-40 glass border-b border-gray-200/50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+      <div class="flex flex-wrap items-center gap-3">
+        <!-- Logo for embed mode -->
+        <div id="embed-logo" class="hidden items-center gap-3 mr-4">
+          <img src="/Strongsales%20logo%20black%20%26%20purple%20Transparent.png" alt="StrongSales" class="h-7 w-auto">
+        </div>
+
+        <!-- Gym Selector -->
+        <div id="gym-selector-container" class="flex-1 min-w-[200px] max-w-xs">
+          <select id="gym-select" class="w-full px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 focus:ring-2 focus:ring-strongsales-300 focus:border-transparent outline-none transition-all cursor-pointer">
+            <option value="">Select gym...</option>
+          </select>
+        </div>
+
+        <!-- Date Range -->
+        <div class="flex items-center gap-2">
+          <input type="date" id="from-date" class="px-3 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-700 focus:ring-2 focus:ring-strongsales-300 focus:border-transparent outline-none transition-all">
+          <span class="text-gray-400">-</span>
+          <input type="date" id="to-date" class="px-3 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-700 focus:ring-2 focus:ring-strongsales-300 focus:border-transparent outline-none transition-all">
+        </div>
+
+        <!-- Presets -->
+        <div class="hidden sm:flex items-center gap-2">
+          <button onclick="setPreset('week')" class="px-3 py-2 text-sm font-medium text-gray-600 hover:text-strongsales-600 hover:bg-strongsales-50 rounded-lg transition-all">7 Days</button>
+          <button onclick="setPreset('month')" class="px-3 py-2 text-sm font-medium text-gray-600 hover:text-strongsales-600 hover:bg-strongsales-50 rounded-lg transition-all">30 Days</button>
+          <button onclick="setPreset('quarter')" class="px-3 py-2 text-sm font-medium text-gray-600 hover:text-strongsales-600 hover:bg-strongsales-50 rounded-lg transition-all">90 Days</button>
+        </div>
+
+        <!-- Load Button -->
+        <button onclick="loadAnalytics()" id="load-btn" class="px-6 py-2.5 gradient-bg text-white font-semibold rounded-xl hover:opacity-90 transition-all flex items-center gap-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+          </svg>
+          <span>Load Analytics</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div id="content">
+      <!-- Welcome State -->
+      <div id="welcome-state" class="text-center py-20">
+        <div class="inline-flex items-center justify-center w-20 h-20 gradient-bg rounded-2xl mb-6">
+          <svg class="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+          </svg>
+        </div>
+        <h2 class="text-2xl font-bold text-gray-900 mb-2">Welcome to Entry Analytics</h2>
+        <p class="text-gray-500 max-w-md mx-auto">Select a gym and date range above to view entry analytics and insights.</p>
+      </div>
+
+      <!-- Loading State -->
+      <div id="loading-state" class="hidden text-center py-20">
+        <div class="loading-spinner mx-auto mb-4"></div>
+        <p class="text-gray-500">Loading entry data...</p>
+      </div>
+
+      <!-- Error State -->
+      <div id="error-state" class="hidden text-center py-20">
+        <div class="inline-flex items-center justify-center w-20 h-20 bg-red-100 rounded-2xl mb-6">
+          <svg class="w-10 h-10 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+        </div>
+        <h2 class="text-2xl font-bold text-gray-900 mb-2">Error Loading Data</h2>
+        <p id="error-message" class="text-gray-500 max-w-md mx-auto"></p>
+      </div>
+
+      <!-- Analytics Dashboard -->
+      <div id="analytics-dashboard" class="hidden">
+        <!-- Title & Filters Row -->
+        <div class="flex flex-wrap items-center justify-between gap-4 mb-8">
+          <div>
+            <h2 id="club-name" class="text-2xl font-bold text-gray-900"></h2>
+            <p id="date-range-display" class="text-gray-500 mt-1"></p>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-3">
+            <!-- Door Filter -->
+            <div id="door-filter-container" class="multiselect-dropdown">
+              <button onclick="toggleDoorFilter()" class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 hover:border-strongsales-300 transition-all">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path>
+                </svg>
+                <span id="door-filter-label">All Doors</span>
+                <svg class="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                </svg>
+              </button>
+              <div class="dropdown-content p-4">
+                <div class="flex items-center justify-between mb-3 pb-3 border-b border-gray-100">
+                  <span class="text-sm font-semibold text-gray-700">Filter by Door</span>
+                  <div class="flex gap-2">
+                    <button onclick="selectAllDoors()" class="text-xs text-strongsales-600 hover:text-strongsales-700 font-medium">All</button>
+                    <span class="text-gray-300">|</span>
+                    <button onclick="clearAllDoors()" class="text-xs text-gray-500 hover:text-gray-700 font-medium">Clear</button>
+                  </div>
+                </div>
+                <div id="door-checkboxes" class="space-y-2 max-h-60 overflow-y-auto"></div>
+              </div>
+            </div>
+
+            <!-- Status Filter -->
+            <select id="status-filter" onchange="applyFilters()" class="px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 focus:ring-2 focus:ring-strongsales-300 focus:border-transparent outline-none transition-all cursor-pointer">
+              <option value="all">All Entries</option>
+              <option value="success">Successful Only</option>
+              <option value="failed">Failed Only</option>
+            </select>
+
+            <!-- Export Button -->
+            <button onclick="exportCSV()" class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 hover:border-strongsales-300 hover:text-strongsales-600 transition-all">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+              </svg>
+              Export CSV
+            </button>
+          </div>
+        </div>
+
+        <!-- Summary Cards -->
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+          <!-- Total Entries -->
+          <div class="col-span-2 gradient-bg rounded-2xl p-6 text-white card-shadow-lg">
+            <p class="text-white/80 text-sm font-medium mb-1">Total Entries</p>
+            <p id="stat-total" class="text-4xl font-bold mb-1">-</p>
+            <p id="stat-success-rate" class="text-white/60 text-sm">- success rate</p>
+          </div>
+
+          <!-- Successful -->
+          <div class="bg-white rounded-2xl p-5 card-shadow card-shadow-hover transition-all">
+            <p class="text-gray-500 text-sm font-medium mb-1">Successful</p>
+            <p id="stat-successful" class="text-3xl font-bold text-emerald-600">-</p>
+            <p class="text-gray-400 text-xs mt-1">entries</p>
+          </div>
+
+          <!-- Failed -->
+          <div class="bg-white rounded-2xl p-5 card-shadow card-shadow-hover transition-all">
+            <p class="text-gray-500 text-sm font-medium mb-1">Failed</p>
+            <p id="stat-failed" class="text-3xl font-bold text-red-500">-</p>
+            <p class="text-gray-400 text-xs mt-1">entries</p>
+          </div>
+
+          <!-- Unique Visitors -->
+          <div class="bg-white rounded-2xl p-5 card-shadow card-shadow-hover transition-all">
+            <p class="text-gray-500 text-sm font-medium mb-1">Unique Visitors</p>
+            <p id="stat-visitors" class="text-3xl font-bold text-gray-900">-</p>
+            <p class="text-gray-400 text-xs mt-1">members</p>
+          </div>
+
+          <!-- Avg per Day -->
+          <div class="bg-white rounded-2xl p-5 card-shadow card-shadow-hover transition-all">
+            <p class="text-gray-500 text-sm font-medium mb-1">Avg per Day</p>
+            <p id="stat-avg-day" class="text-3xl font-bold text-gray-900">-</p>
+            <p class="text-gray-400 text-xs mt-1">entries</p>
+          </div>
+        </div>
+
+        <!-- Peak Info Row -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+          <div class="bg-white rounded-2xl p-5 card-shadow flex items-center gap-4">
+            <div class="w-12 h-12 gradient-bg rounded-xl flex items-center justify-center">
+              <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+              </svg>
+            </div>
+            <div>
+              <p class="text-gray-500 text-sm">Peak Hour</p>
+              <p id="stat-peak-hour" class="text-xl font-bold text-gray-900">-</p>
+            </div>
+          </div>
+          <div class="bg-white rounded-2xl p-5 card-shadow flex items-center gap-4">
+            <div class="w-12 h-12 gradient-bg rounded-xl flex items-center justify-center">
+              <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+              </svg>
+            </div>
+            <div>
+              <p class="text-gray-500 text-sm">Busiest Day</p>
+              <p id="stat-peak-day" class="text-xl font-bold text-gray-900">-</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Charts Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+          <!-- Entry Trend Chart -->
+          <div class="lg:col-span-2 bg-white rounded-2xl p-6 card-shadow">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Entry Trend</h3>
+            <div class="h-80">
+              <canvas id="trend-chart"></canvas>
+            </div>
+          </div>
+
+          <!-- Peak Hours Chart -->
+          <div class="bg-white rounded-2xl p-6 card-shadow">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Entries by Hour</h3>
+            <div class="h-72">
+              <canvas id="hours-chart"></canvas>
+            </div>
+          </div>
+
+          <!-- Day of Week Chart -->
+          <div class="bg-white rounded-2xl p-6 card-shadow">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Entries by Day of Week</h3>
+            <div class="h-72">
+              <canvas id="days-chart"></canvas>
+            </div>
+          </div>
+
+          <!-- Door Usage Chart -->
+          <div class="bg-white rounded-2xl p-6 card-shadow">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Door Usage</h3>
+            <div class="h-72">
+              <canvas id="doors-chart"></canvas>
+            </div>
+          </div>
+
+          <!-- Card Type Distribution -->
+          <div class="bg-white rounded-2xl p-6 card-shadow">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Card Type Distribution</h3>
+            <div class="h-72">
+              <canvas id="cards-chart"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tables Row -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+          <!-- Top Visitors -->
+          <div class="bg-white rounded-2xl p-6 card-shadow">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Top Visitors</h3>
+            <div class="overflow-x-auto">
+              <table class="w-full">
+                <thead>
+                  <tr class="border-b border-gray-100">
+                    <th class="pb-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">#</th>
+                    <th class="pb-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Member</th>
+                    <th class="pb-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">Entries</th>
+                    <th class="pb-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Last Visit</th>
+                  </tr>
+                </thead>
+                <tbody id="top-visitors-table"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Failed Entry Reasons -->
+          <div class="bg-white rounded-2xl p-6 card-shadow">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Failed Entry Reasons</h3>
+            <div id="failed-reasons-container">
+              <p class="text-gray-400 text-sm">No failed entries in this period.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recent Entries Table -->
+        <div class="bg-white rounded-2xl p-6 card-shadow">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold text-gray-900">Recent Entries</h3>
+            <span id="entries-count" class="text-sm text-gray-500"></span>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full">
+              <thead>
+                <tr class="border-b border-gray-100">
+                  <th class="pb-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Time</th>
+                  <th class="pb-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Member</th>
+                  <th class="pb-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Door</th>
+                  <th class="pb-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Card</th>
+                  <th class="pb-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                </tr>
+              </thead>
+              <tbody id="entries-table"></tbody>
+            </table>
+          </div>
+          <div id="entries-pagination" class="flex items-center justify-center gap-2 mt-4 pt-4 border-t border-gray-100"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer id="footer" class="border-t border-gray-200 mt-12 py-8">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div class="flex items-center gap-2">
+          <img src="/Strongsales%20logo%20black%20%26%20purple%20Transparent.png" alt="StrongSales" class="h-6 w-auto opacity-60">
+          <span class="text-sm text-gray-500">Entry Analytics</span>
+        </div>
+        <p class="text-sm text-gray-400">Powered by Zoezi</p>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // ===== STATE =====
+    let rawAnalytics = null;
+    let analytics = null;
+    let charts = {};
+    let selectedDoors = new Set();
+    let allDoors = [];
+    let currentPage = 1;
+    const entriesPerPage = 20;
+
+    const config = {
+      isIframeMode: window.parent !== window,
+      presetClubId: null,
+      embedToken: null,
+      hideHeader: false,
+      hideGymSelector: false,
+      isSecureEmbed: false
+    };
+
+    // ===== INITIALIZATION =====
+    document.addEventListener('DOMContentLoaded', async () => {
+      // Check URL params
+      const params = new URLSearchParams(window.location.search);
+      const embedToken = params.get('token');
+      config.hideHeader = params.get('hideHeader') === 'true';
+
+      if (embedToken) {
+        config.embedToken = embedToken;
+        // Verify token
+        try {
+          const response = await fetch(`/api/verify-token?token=${encodeURIComponent(embedToken)}`);
+          const result = await response.json();
+          if (result.valid) {
+            config.presetClubId = result.clubId;
+            config.isSecureEmbed = true;
+            config.hideGymSelector = true;
+          } else {
+            showError('Invalid or expired embed token');
+            return;
+          }
+        } catch (e) {
+          showError('Failed to verify embed token');
+          return;
+        }
+      }
+
+      // Apply embed mode styling
+      if (config.hideHeader) {
+        document.getElementById('header').classList.add('hidden');
+        document.getElementById('embed-logo').classList.remove('hidden');
+        document.getElementById('embed-logo').classList.add('flex');
+      }
+
+      if (config.hideGymSelector) {
+        document.getElementById('gym-selector-container').classList.add('hidden');
+      }
+
+      // Set default dates (last 30 days)
+      setPreset('month');
+
+      // Load gyms if not embed mode
+      if (!config.isSecureEmbed) {
+        await loadGyms();
+      } else {
+        // Auto-load analytics in embed mode
+        loadAnalytics();
+      }
+    });
+
+    // ===== DATA LOADING =====
+    async function loadGyms() {
+      try {
+        const response = await fetch('/api/gyms');
+        const gyms = await response.json();
+
+        const select = document.getElementById('gym-select');
+        select.innerHTML = '<option value="">Select gym...</option>';
+
+        gyms.forEach(gym => {
+          const option = document.createElement('option');
+          option.value = gym.Club_Zoezi_ID;
+          option.textContent = gym.Club_name;
+          select.appendChild(option);
+        });
+      } catch (error) {
+        console.error('Failed to load gyms:', error);
+      }
+    }
+
+    async function loadAnalytics() {
+      const clubId = config.presetClubId || document.getElementById('gym-select').value;
+      const fromDate = document.getElementById('from-date').value;
+      const toDate = document.getElementById('to-date').value;
+
+      if (!clubId) {
+        alert('Please select a gym');
+        return;
+      }
+
+      if (!fromDate || !toDate) {
+        alert('Please select a date range');
+        return;
+      }
+
+      showState('loading');
+
+      try {
+        let url;
+        if (config.isSecureEmbed && config.embedToken) {
+          url = `/api/embed/analytics?token=${encodeURIComponent(config.embedToken)}&fromDate=${fromDate}&toDate=${toDate}`;
+        } else {
+          url = `/api/analytics/${clubId}?fromDate=${fromDate}&toDate=${toDate}`;
+        }
+
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error('Failed to load analytics');
+        }
+
+        rawAnalytics = await response.json();
+
+        // Initialize doors
+        allDoors = rawAnalytics.byDoor || [];
+        selectedDoors = new Set(allDoors.map(d => d.id));
+
+        // Apply filters and render
+        applyFilters();
+        showState('analytics');
+      } catch (error) {
+        console.error('Analytics error:', error);
+        showError(error.message);
+      }
+    }
+
+    // ===== FILTERING =====
+    function applyFilters() {
+      if (!rawAnalytics) return;
+
+      const statusFilter = document.getElementById('status-filter').value;
+
+      // Filter raw entries
+      let filteredEntries = rawAnalytics.rawEntries.filter(e => {
+        // Door filter
+        if (!selectedDoors.has(e.door) && !selectedDoors.has('unknown')) {
+          if (e.door || !selectedDoors.has('unknown')) {
+            const doorMatch = selectedDoors.has(e.door) || (e.door === undefined && selectedDoors.has('unknown'));
+            if (!doorMatch) return false;
+          }
+        }
+
+        // Status filter
+        if (statusFilter === 'success' && !e.success) return false;
+        if (statusFilter === 'failed' && e.success) return false;
+
+        return true;
+      });
+
+      // Recalculate analytics from filtered entries
+      analytics = recalculateAnalytics(filteredEntries);
+      analytics.club = rawAnalytics.club;
+      analytics.dateRange = rawAnalytics.dateRange;
+
+      renderDashboard();
+    }
+
+    function recalculateAnalytics(entries) {
+      // Similar to backend processing but client-side
+      const totalEntries = entries.length;
+      const successfulEntries = entries.filter(e => e.success).length;
+      const failedEntries = entries.filter(e => !e.success).length;
+      const successRate = totalEntries > 0 ? ((successfulEntries / totalEntries) * 100).toFixed(1) : 0;
+
+      const uniqueVisitorIds = new Set(entries.filter(e => e.userId).map(e => e.userId));
+      const uniqueVisitors = uniqueVisitorIds.size;
+
+      const uniqueDates = new Set(entries.map(e => e.entryTime.split(' ')[0]));
+      const avgEntriesPerDay = uniqueDates.size > 0 ? (totalEntries / uniqueDates.size).toFixed(1) : 0;
+
+      // By hour
+      const hourCounts = {};
+      for (let h = 5; h <= 23; h++) {
+        hourCounts[h] = { total: 0, successful: 0 };
+      }
+      entries.forEach(e => {
+        const hour = parseInt(e.entryTime.split(' ')[1].split(':')[0]);
+        if (hour >= 5 && hour <= 23) {
+          hourCounts[hour].total++;
+          if (e.success) hourCounts[hour].successful++;
+        }
+      });
+      const byHour = Object.entries(hourCounts).map(([hour, data]) => ({
+        hour: parseInt(hour),
+        label: `${hour.toString().padStart(2, '0')}:00`,
+        total: data.total,
+        successful: data.successful,
+        successRate: data.total > 0 ? ((data.successful / data.total) * 100).toFixed(1) : 0
+      }));
+
+      const peakHourData = byHour.reduce((max, h) => h.total > max.total ? h : max, { total: 0 });
+      const peakHour = peakHourData.total > 0 ? peakHourData.label : null;
+
+      // By day
+      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const dayCounts = {};
+      dayNames.forEach((name, idx) => {
+        dayCounts[idx] = { name, total: 0, successful: 0 };
+      });
+      entries.forEach(e => {
+        const day = new Date(e.entryTime).getDay();
+        dayCounts[day].total++;
+        if (e.success) dayCounts[day].successful++;
+      });
+      const byDay = Object.entries(dayCounts).map(([dayIdx, data]) => ({
+        day: data.name,
+        dayIndex: parseInt(dayIdx),
+        total: data.total,
+        successful: data.successful,
+        successRate: data.total > 0 ? ((data.successful / data.total) * 100).toFixed(1) : 0
+      }));
+
+      const peakDayData = byDay.reduce((max, d) => d.total > max.total ? d : max, { total: 0 });
+      const peakDay = peakDayData.total > 0 ? peakDayData.day : null;
+
+      // By door
+      const doorCounts = {};
+      entries.forEach(e => {
+        const doorId = e.door || 'unknown';
+        const doorName = e.doorName || `Door ${doorId}`;
+        if (!doorCounts[doorId]) {
+          doorCounts[doorId] = { id: doorId, name: doorName, total: 0, successful: 0 };
+        }
+        doorCounts[doorId].total++;
+        if (e.success) doorCounts[doorId].successful++;
+      });
+      const byDoor = Object.values(doorCounts)
+        .map(d => ({ ...d, successRate: d.total > 0 ? ((d.successful / d.total) * 100).toFixed(1) : 0 }))
+        .sort((a, b) => b.total - a.total);
+
+      // By card type
+      const cardCounts = {};
+      entries.forEach(e => {
+        const cardName = e.cardName || 'Unknown';
+        if (!cardCounts[cardName]) {
+          cardCounts[cardName] = { name: cardName, total: 0, successful: 0 };
+        }
+        cardCounts[cardName].total++;
+        if (e.success) cardCounts[cardName].successful++;
+      });
+      const byCardType = Object.values(cardCounts)
+        .map(c => ({ ...c, successRate: c.total > 0 ? ((c.successful / c.total) * 100).toFixed(1) : 0 }))
+        .sort((a, b) => b.total - a.total);
+
+      // Daily trend
+      const dailyCounts = {};
+      entries.forEach(e => {
+        const date = e.entryTime.split(' ')[0];
+        if (!dailyCounts[date]) {
+          dailyCounts[date] = { date, total: 0, successful: 0, uniqueVisitors: new Set() };
+        }
+        dailyCounts[date].total++;
+        if (e.success) dailyCounts[date].successful++;
+        if (e.userId) dailyCounts[date].uniqueVisitors.add(e.userId);
+      });
+      const dailyTrend = Object.values(dailyCounts)
+        .map(d => ({
+          date: d.date,
+          total: d.total,
+          successful: d.successful,
+          uniqueVisitors: d.uniqueVisitors.size,
+          successRate: d.total > 0 ? ((d.successful / d.total) * 100).toFixed(1) : 0
+        }))
+        .sort((a, b) => a.date.localeCompare(b.date));
+
+      // Top visitors
+      const visitorCounts = {};
+      entries.forEach(e => {
+        if (e.userId) {
+          if (!visitorCounts[e.userId]) {
+            visitorCounts[e.userId] = { id: e.userId, name: e.memberName || `Member #${e.userId}`, entries: 0, lastVisit: null };
+          }
+          visitorCounts[e.userId].entries++;
+          const entryDate = e.entryTime.split(' ')[0];
+          if (!visitorCounts[e.userId].lastVisit || entryDate > visitorCounts[e.userId].lastVisit) {
+            visitorCounts[e.userId].lastVisit = entryDate;
+          }
+        }
+      });
+      const topVisitors = Object.values(visitorCounts)
+        .sort((a, b) => b.entries - a.entries)
+        .slice(0, 20);
+
+      // Failed reasons
+      const reasonCounts = {};
+      entries.filter(e => !e.success && e.reason).forEach(e => {
+        if (!reasonCounts[e.reason]) {
+          reasonCounts[e.reason] = { reason: e.reason, count: 0 };
+        }
+        reasonCounts[e.reason].count++;
+      });
+      const failedReasons = Object.values(reasonCounts).sort((a, b) => b.count - a.count);
+
+      return {
+        summary: {
+          totalEntries,
+          successfulEntries,
+          failedEntries,
+          successRate: parseFloat(successRate),
+          uniqueVisitors,
+          avgEntriesPerDay: parseFloat(avgEntriesPerDay),
+          peakHour,
+          peakDay
+        },
+        byHour,
+        byDay,
+        byDoor,
+        byCardType,
+        dailyTrend,
+        topVisitors,
+        failedReasons,
+        rawEntries: entries
+      };
+    }
+
+    // ===== RENDERING =====
+    function renderDashboard() {
+      if (!analytics) return;
+
+      const { summary, byHour, byDay, byDoor, byCardType, dailyTrend, topVisitors, failedReasons, rawEntries, club, dateRange } = analytics;
+
+      // Header info
+      document.getElementById('club-name').textContent = club?.name || 'Unknown Gym';
+      document.getElementById('date-range-display').textContent = `${dateRange.fromDate} to ${dateRange.toDate}`;
+
+      // Summary stats
+      document.getElementById('stat-total').textContent = summary.totalEntries.toLocaleString();
+      document.getElementById('stat-success-rate').textContent = `${summary.successRate}% success rate`;
+      document.getElementById('stat-successful').textContent = summary.successfulEntries.toLocaleString();
+      document.getElementById('stat-failed').textContent = summary.failedEntries.toLocaleString();
+      document.getElementById('stat-visitors').textContent = summary.uniqueVisitors.toLocaleString();
+      document.getElementById('stat-avg-day').textContent = summary.avgEntriesPerDay;
+      document.getElementById('stat-peak-hour').textContent = summary.peakHour || 'N/A';
+      document.getElementById('stat-peak-day').textContent = summary.peakDay || 'N/A';
+
+      // Render door filter
+      renderDoorFilter();
+
+      // Render charts
+      renderTrendChart(dailyTrend);
+      renderHoursChart(byHour);
+      renderDaysChart(byDay);
+      renderDoorsChart(byDoor);
+      renderCardsChart(byCardType);
+
+      // Render tables
+      renderTopVisitors(topVisitors);
+      renderFailedReasons(failedReasons);
+      renderEntriesTable(rawEntries);
+    }
+
+    function renderDoorFilter() {
+      const container = document.getElementById('door-checkboxes');
+      container.innerHTML = '';
+
+      allDoors.forEach(door => {
+        const div = document.createElement('div');
+        div.className = 'flex items-center gap-2';
+        div.innerHTML = `
+          <input type="checkbox" id="door-${door.id}" value="${door.id}"
+            ${selectedDoors.has(door.id) ? 'checked' : ''}
+            onchange="toggleDoor('${door.id}')"
+            class="w-4 h-4 rounded border-gray-300 text-strongsales-600 focus:ring-strongsales-300">
+          <label for="door-${door.id}" class="text-sm text-gray-700 cursor-pointer flex-1">${door.name}</label>
+          <span class="text-xs text-gray-400">${door.total}</span>
+        `;
+        container.appendChild(div);
+      });
+
+      updateDoorFilterLabel();
+    }
+
+    function toggleDoor(doorId) {
+      if (selectedDoors.has(doorId)) {
+        selectedDoors.delete(doorId);
+      } else {
+        selectedDoors.add(doorId);
+      }
+      updateDoorFilterLabel();
+      applyFilters();
+    }
+
+    function selectAllDoors() {
+      selectedDoors = new Set(allDoors.map(d => d.id));
+      document.querySelectorAll('#door-checkboxes input').forEach(cb => cb.checked = true);
+      updateDoorFilterLabel();
+      applyFilters();
+    }
+
+    function clearAllDoors() {
+      selectedDoors.clear();
+      document.querySelectorAll('#door-checkboxes input').forEach(cb => cb.checked = false);
+      updateDoorFilterLabel();
+      applyFilters();
+    }
+
+    function updateDoorFilterLabel() {
+      const label = document.getElementById('door-filter-label');
+      if (selectedDoors.size === 0) {
+        label.textContent = 'No Doors';
+      } else if (selectedDoors.size === allDoors.length) {
+        label.textContent = 'All Doors';
+      } else {
+        label.textContent = `${selectedDoors.size} of ${allDoors.length}`;
+      }
+    }
+
+    function toggleDoorFilter() {
+      document.getElementById('door-filter-container').classList.toggle('open');
+    }
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+      const container = document.getElementById('door-filter-container');
+      if (!container.contains(e.target)) {
+        container.classList.remove('open');
+      }
+    });
+
+    // ===== CHARTS =====
+    const chartColors = {
+      primary: 'rgba(175, 172, 251, 1)',
+      primaryLight: 'rgba(175, 172, 251, 0.2)',
+      success: 'rgba(34, 197, 94, 1)',
+      successLight: 'rgba(34, 197, 94, 0.2)',
+      failed: 'rgba(239, 68, 68, 1)',
+      failedLight: 'rgba(239, 68, 68, 0.2)',
+      purple: ['#AFACFB', '#8b5cf6', '#7c3aed', '#6d28d9', '#5b21b6', '#4c1d95', '#a78bfa', '#c4b5fd']
+    };
+
+    function destroyChart(id) {
+      if (charts[id]) {
+        charts[id].destroy();
+        delete charts[id];
+      }
+    }
+
+    function renderTrendChart(data) {
+      destroyChart('trend');
+      const ctx = document.getElementById('trend-chart').getContext('2d');
+
+      charts['trend'] = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: data.map(d => d.date),
+          datasets: [
+            {
+              label: 'Total Entries',
+              data: data.map(d => d.total),
+              borderColor: chartColors.primary,
+              backgroundColor: chartColors.primaryLight,
+              fill: true,
+              tension: 0.4,
+              yAxisID: 'y'
+            },
+            {
+              label: 'Unique Visitors',
+              data: data.map(d => d.uniqueVisitors),
+              borderColor: chartColors.success,
+              borderDash: [5, 5],
+              fill: false,
+              tension: 0.4,
+              yAxisID: 'y1'
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { intersect: false, mode: 'index' },
+          plugins: {
+            legend: { position: 'top' }
+          },
+          scales: {
+            y: {
+              type: 'linear',
+              display: true,
+              position: 'left',
+              title: { display: true, text: 'Entries' },
+              beginAtZero: true
+            },
+            y1: {
+              type: 'linear',
+              display: true,
+              position: 'right',
+              title: { display: true, text: 'Unique Visitors' },
+              beginAtZero: true,
+              grid: { drawOnChartArea: false }
+            }
+          }
+        }
+      });
+    }
+
+    function renderHoursChart(data) {
+      destroyChart('hours');
+      const ctx = document.getElementById('hours-chart').getContext('2d');
+
+      charts['hours'] = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: data.map(d => d.label),
+          datasets: [{
+            label: 'Entries',
+            data: data.map(d => d.total),
+            backgroundColor: chartColors.primary,
+            borderRadius: 4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { beginAtZero: true }
+          }
+        }
+      });
+    }
+
+    function renderDaysChart(data) {
+      destroyChart('days');
+      const ctx = document.getElementById('days-chart').getContext('2d');
+
+      // Reorder to start from Monday
+      const orderedData = [...data.slice(1), data[0]];
+
+      charts['days'] = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: orderedData.map(d => d.day.substring(0, 3)),
+          datasets: [{
+            label: 'Entries',
+            data: orderedData.map(d => d.total),
+            backgroundColor: orderedData.map((_, i) => chartColors.purple[i % chartColors.purple.length]),
+            borderRadius: 4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { beginAtZero: true }
+          }
+        }
+      });
+    }
+
+    function renderDoorsChart(data) {
+      destroyChart('doors');
+      const ctx = document.getElementById('doors-chart').getContext('2d');
+
+      const top8 = data.slice(0, 8);
+
+      charts['doors'] = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+          labels: top8.map(d => d.name),
+          datasets: [{
+            data: top8.map(d => d.total),
+            backgroundColor: chartColors.purple,
+            borderWidth: 0
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'right' }
+          }
+        }
+      });
+    }
+
+    function renderCardsChart(data) {
+      destroyChart('cards');
+      const ctx = document.getElementById('cards-chart').getContext('2d');
+
+      const top8 = data.slice(0, 8);
+
+      charts['cards'] = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: top8.map(d => d.name.length > 20 ? d.name.substring(0, 20) + '...' : d.name),
+          datasets: [{
+            label: 'Entries',
+            data: top8.map(d => d.total),
+            backgroundColor: chartColors.purple,
+            borderRadius: 4
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { beginAtZero: true }
+          }
+        }
+      });
+    }
+
+    // ===== TABLES =====
+    function renderTopVisitors(data) {
+      const tbody = document.getElementById('top-visitors-table');
+      tbody.innerHTML = '';
+
+      if (data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="py-8 text-center text-gray-400">No visitor data available</td></tr>';
+        return;
+      }
+
+      data.slice(0, 10).forEach((visitor, i) => {
+        const tr = document.createElement('tr');
+        tr.className = 'border-b border-gray-50 hover:bg-gray-50 transition-colors';
+        tr.innerHTML = `
+          <td class="py-3 text-gray-400 text-sm">${i + 1}</td>
+          <td class="py-3">
+            <div class="flex items-center gap-3">
+              <div class="w-8 h-8 gradient-bg rounded-full flex items-center justify-center text-white text-sm font-semibold">
+                ${visitor.name.charAt(0).toUpperCase()}
+              </div>
+              <span class="text-sm font-medium text-gray-900">${visitor.name}</span>
+            </div>
+          </td>
+          <td class="py-3 text-center">
+            <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-strongsales-100 text-strongsales-700 text-sm font-semibold">
+              ${visitor.entries}
+            </span>
+          </td>
+          <td class="py-3 text-right text-sm text-gray-500">${visitor.lastVisit}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function renderFailedReasons(data) {
+      const container = document.getElementById('failed-reasons-container');
+
+      if (data.length === 0) {
+        container.innerHTML = '<p class="text-gray-400 text-sm py-4 text-center">No failed entries in this period.</p>';
+        return;
+      }
+
+      const reasonLabels = {
+        'cardNotValidForDoor': 'Card not valid for this door',
+        'cardValidOtherHours': 'Card valid at different hours',
+        'noValidCard': 'No valid card',
+        'cardExpired': 'Card expired',
+        'noMembership': 'No active membership'
+      };
+
+      container.innerHTML = '<div class="space-y-3">' + data.map(r => {
+        const label = reasonLabels[r.reason] || r.reason;
+        const percentage = analytics.summary.failedEntries > 0
+          ? ((r.count / analytics.summary.failedEntries) * 100).toFixed(1)
+          : 0;
+        return `
+          <div class="flex items-center gap-4">
+            <div class="flex-1">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-sm font-medium text-gray-700">${label}</span>
+                <span class="text-sm text-gray-500">${r.count} (${percentage}%)</span>
+              </div>
+              <div class="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                <div class="h-full bg-red-400 rounded-full" style="width: ${percentage}%"></div>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('') + '</div>';
+    }
+
+    function renderEntriesTable(entries) {
+      const tbody = document.getElementById('entries-table');
+      const countEl = document.getElementById('entries-count');
+      const paginationEl = document.getElementById('entries-pagination');
+
+      // Sort by time descending
+      const sorted = [...entries].sort((a, b) => b.entryTime.localeCompare(a.entryTime));
+
+      countEl.textContent = `${sorted.length.toLocaleString()} entries`;
+
+      // Pagination
+      const totalPages = Math.ceil(sorted.length / entriesPerPage);
+      const start = (currentPage - 1) * entriesPerPage;
+      const pageEntries = sorted.slice(start, start + entriesPerPage);
+
+      tbody.innerHTML = '';
+
+      if (pageEntries.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="py-8 text-center text-gray-400">No entries found</td></tr>';
+        paginationEl.innerHTML = '';
+        return;
+      }
+
+      pageEntries.forEach(entry => {
+        const tr = document.createElement('tr');
+        tr.className = 'border-b border-gray-50 hover:bg-gray-50 transition-colors';
+        tr.innerHTML = `
+          <td class="py-3 text-sm text-gray-600">${entry.entryTime}</td>
+          <td class="py-3 text-sm text-gray-900 font-medium">${entry.memberName || '-'}</td>
+          <td class="py-3 text-sm text-gray-600">${entry.doorName || '-'}</td>
+          <td class="py-3 text-sm text-gray-600">${entry.cardName || '-'}</td>
+          <td class="py-3 text-center">
+            <span class="status-badge ${entry.success ? 'status-success' : 'status-failed'}">
+              ${entry.success ? 'Success' : 'Failed'}
+            </span>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      // Pagination controls
+      if (totalPages > 1) {
+        paginationEl.innerHTML = `
+          <button onclick="goToPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}
+            class="px-3 py-1 text-sm rounded-lg ${currentPage === 1 ? 'text-gray-300 cursor-not-allowed' : 'text-gray-600 hover:bg-gray-100'}">
+            Prev
+          </button>
+          <span class="text-sm text-gray-500">Page ${currentPage} of ${totalPages}</span>
+          <button onclick="goToPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}
+            class="px-3 py-1 text-sm rounded-lg ${currentPage === totalPages ? 'text-gray-300 cursor-not-allowed' : 'text-gray-600 hover:bg-gray-100'}">
+            Next
+          </button>
+        `;
+      } else {
+        paginationEl.innerHTML = '';
+      }
+    }
+
+    function goToPage(page) {
+      currentPage = page;
+      renderEntriesTable(analytics.rawEntries);
+    }
+
+    // ===== UI HELPERS =====
+    function showState(state) {
+      const states = ['welcome', 'loading', 'error', 'analytics'];
+      states.forEach(s => {
+        const el = document.getElementById(s === 'analytics' ? 'analytics-dashboard' : `${s}-state`);
+        if (el) {
+          el.classList.toggle('hidden', s !== state);
+        }
+      });
+    }
+
+    function showError(message) {
+      document.getElementById('error-message').textContent = message;
+      showState('error');
+    }
+
+    function setPreset(preset) {
+      const today = new Date();
+      const toDate = today.toISOString().split('T')[0];
+      let fromDate;
+
+      switch (preset) {
+        case 'week':
+          fromDate = new Date(today.setDate(today.getDate() - 7)).toISOString().split('T')[0];
+          break;
+        case 'month':
+          fromDate = new Date(today.setDate(today.getDate() - 30)).toISOString().split('T')[0];
+          break;
+        case 'quarter':
+          fromDate = new Date(today.setDate(today.getDate() - 90)).toISOString().split('T')[0];
+          break;
+        default:
+          fromDate = new Date(today.setDate(today.getDate() - 30)).toISOString().split('T')[0];
+      }
+
+      document.getElementById('from-date').value = fromDate;
+      document.getElementById('to-date').value = new Date().toISOString().split('T')[0];
+    }
+
+    // ===== EXPORT =====
+    function exportCSV() {
+      if (!analytics || !analytics.rawEntries) {
+        alert('No data to export');
+        return;
+      }
+
+      const headers = ['Time', 'Member', 'Door', 'Card Type', 'Status', 'Reason'];
+      const rows = analytics.rawEntries.map(e => [
+        e.entryTime,
+        e.memberName || '',
+        e.doorName || '',
+        e.cardName || '',
+        e.success ? 'Success' : 'Failed',
+        e.reason || ''
+      ]);
+
+      const csv = [headers, ...rows].map(row =>
+        row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')
+      ).join('\n');
+
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `entry-analytics-${analytics.club?.name || 'export'}-${analytics.dateRange?.fromDate}-${analytics.dateRange?.toDate}.csv`;
+      link.click();
+    }
+  </script>
+</body>
+</html>
