@@ -128,7 +128,7 @@ function verifyEmbedToken(token) {
   }
 }
 
-// Zoezi API helper with retry logic
+// Zoezi API helper for GET requests
 async function zoeziFetch(domain, apiKey, endpoint, maxRetries = 3) {
   const url = `https://${domain}${endpoint}`;
 
@@ -154,8 +154,70 @@ async function zoeziFetch(domain, apiKey, endpoint, maxRetries = 3) {
   }
 }
 
+// Zoezi Stats API - POST method for efficient entry data fetching
+async function fetchZoeziEntries(domain, apiKey, fromDate, toDate, maxRetries = 3) {
+  const url = `https://${domain}/api/stats/generic`;
+
+  const requestBody = {
+    reporttype: "list",
+    datatype: "entry",
+    usetime: true,
+    timeproperty: "date",
+    absolutetime: true,
+    absolutetimeunit: "date",
+    absolutetimefrom: fromDate,
+    absolutetimeto: toDate,
+    filter: null,
+    groupproperty: null,
+    properties: [
+      "date",
+      "user.id",
+      "user.name",
+      "user.mail",
+      "door.name",
+      "door.id",
+      "trainingcard.name",
+      "success"
+    ],
+    sort: "date",
+    sortDescending: true
+  };
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`Fetching entries from ${domain} (${fromDate} to ${toDate}), attempt ${attempt}`);
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'Authorization': `Zoezi ${apiKey}`
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Zoezi API error: ${response.status} - ${errorText}`);
+      }
+
+      const result = await response.json();
+      console.log(`Fetched ${result.data?.length || 0} entries`);
+      return result;
+    } catch (error) {
+      console.error(`Attempt ${attempt}/${maxRetries} failed:`, error.message);
+      if (attempt === maxRetries) throw error;
+      await new Promise(r => setTimeout(r, attempt * 2000));
+    }
+  }
+}
+
 // Process entry data into analytics
-function processEntryAnalytics(entries, doors = []) {
+// Handles data from /api/stats/generic which has flattened properties like "user.id", "door.name"
+function processEntryAnalytics(apiResponse) {
+  const entries = apiResponse?.data || [];
+
   if (!entries || entries.length === 0) {
     return {
       summary: {
@@ -175,28 +237,43 @@ function processEntryAnalytics(entries, doors = []) {
       dailyTrend: [],
       topVisitors: [],
       failedReasons: [],
-      rawEntries: entries
+      rawEntries: []
     };
   }
 
-  // Create door lookup
+  // Normalize entries from stats API format
+  const normalizedEntries = entries.map(e => ({
+    entryTime: e.date,
+    success: e.success !== false, // Default to true if not specified
+    user_id: e['user.id'],
+    memberName: e['user.name'] || null,
+    memberEmail: e['user.mail'] || null,
+    door: e['door.id'],
+    doorName: e['door.name'] || `Door ${e['door.id']}`,
+    cardName: e['trainingcard.name'] || 'Unknown',
+    reason: e.reason || null
+  }));
+
+  // Create door lookup from the data itself
   const doorLookup = {};
-  doors.forEach(d => {
-    doorLookup[d.id] = d.name || `Door ${d.id}`;
+  normalizedEntries.forEach(e => {
+    if (e.door) {
+      doorLookup[e.door] = e.doorName;
+    }
   });
 
   // Basic counts
-  const totalEntries = entries.length;
-  const successfulEntries = entries.filter(e => e.success).length;
-  const failedEntries = entries.filter(e => !e.success).length;
+  const totalEntries = normalizedEntries.length;
+  const successfulEntries = normalizedEntries.filter(e => e.success).length;
+  const failedEntries = normalizedEntries.filter(e => !e.success).length;
   const successRate = totalEntries > 0 ? ((successfulEntries / totalEntries) * 100).toFixed(1) : 0;
 
   // Unique visitors
-  const uniqueVisitorIds = new Set(entries.filter(e => e.user_id).map(e => e.user_id));
+  const uniqueVisitorIds = new Set(normalizedEntries.filter(e => e.user_id).map(e => e.user_id));
   const uniqueVisitors = uniqueVisitorIds.size;
 
   // Get unique dates
-  const uniqueDates = new Set(entries.map(e => {
+  const uniqueDates = new Set(normalizedEntries.map(e => {
     const d = new Date(e.entryTime);
     return d.yyyymmdd();
   }));
@@ -208,7 +285,7 @@ function processEntryAnalytics(entries, doors = []) {
     hourCounts[h] = { total: 0, successful: 0 };
   }
 
-  entries.forEach(e => {
+  normalizedEntries.forEach(e => {
     const hour = new Date(e.entryTime).getHours();
     if (hour >= 5 && hour <= 23) {
       hourCounts[hour].total++;
@@ -235,7 +312,7 @@ function processEntryAnalytics(entries, doors = []) {
     dayCounts[idx] = { name, total: 0, successful: 0 };
   });
 
-  entries.forEach(e => {
+  normalizedEntries.forEach(e => {
     const day = new Date(e.entryTime).getDay();
     dayCounts[day].total++;
     if (e.success) dayCounts[day].successful++;
@@ -255,9 +332,9 @@ function processEntryAnalytics(entries, doors = []) {
 
   // By door analysis
   const doorCounts = {};
-  entries.forEach(e => {
+  normalizedEntries.forEach(e => {
     const doorId = e.door || 'unknown';
-    const doorName = doorLookup[doorId] || `Door ${doorId}`;
+    const doorName = e.doorName || doorLookup[doorId] || `Door ${doorId}`;
     if (!doorCounts[doorId]) {
       doorCounts[doorId] = { id: doorId, name: doorName, total: 0, successful: 0 };
     }
@@ -274,7 +351,7 @@ function processEntryAnalytics(entries, doors = []) {
 
   // By card type analysis
   const cardCounts = {};
-  entries.forEach(e => {
+  normalizedEntries.forEach(e => {
     const cardName = e.cardName || 'Unknown';
     if (!cardCounts[cardName]) {
       cardCounts[cardName] = { name: cardName, total: 0, successful: 0 };
@@ -292,7 +369,7 @@ function processEntryAnalytics(entries, doors = []) {
 
   // Daily trend
   const dailyCounts = {};
-  entries.forEach(e => {
+  normalizedEntries.forEach(e => {
     const date = new Date(e.entryTime).yyyymmdd();
     if (!dailyCounts[date]) {
       dailyCounts[date] = { date, total: 0, successful: 0, uniqueVisitors: new Set() };
@@ -314,15 +391,12 @@ function processEntryAnalytics(entries, doors = []) {
 
   // Top visitors
   const visitorCounts = {};
-  entries.forEach(e => {
+  normalizedEntries.forEach(e => {
     if (e.user_id) {
       if (!visitorCounts[e.user_id]) {
-        const memberName = e.Member
-          ? `${e.Member.firstname || ''} ${e.Member.lastname || ''}`.trim()
-          : `Member #${e.user_id}`;
         visitorCounts[e.user_id] = {
           id: e.user_id,
-          name: memberName,
+          name: e.memberName || `Member #${e.user_id}`,
           entries: 0,
           lastVisit: null
         };
@@ -341,7 +415,7 @@ function processEntryAnalytics(entries, doors = []) {
 
   // Failed entry reasons
   const reasonCounts = {};
-  entries.filter(e => !e.success && e.reason).forEach(e => {
+  normalizedEntries.filter(e => !e.success && e.reason).forEach(e => {
     const reason = e.reason;
     if (!reasonCounts[reason]) {
       reasonCounts[reason] = { reason, count: 0 };
@@ -370,15 +444,14 @@ function processEntryAnalytics(entries, doors = []) {
     dailyTrend,
     topVisitors,
     failedReasons,
-    rawEntries: entries.map(e => ({
-      id: e.id,
+    rawEntries: normalizedEntries.map(e => ({
       entryTime: e.entryTime,
       success: e.success,
       userId: e.user_id,
-      memberName: e.Member ? `${e.Member.firstname || ''} ${e.Member.lastname || ''}`.trim() : null,
+      memberName: e.memberName,
       cardName: e.cardName,
       door: e.door,
-      doorName: doorLookup[e.door] || `Door ${e.door}`,
+      doorName: e.doorName,
       reason: e.reason
     }))
   };
@@ -504,20 +577,11 @@ app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
     const domain = club.Zoezi_Domain;
     const apiKey = club.Zoezi_Api_Key;
 
-    // Fetch entries
-    const entries = await zoeziFetch(domain, apiKey, `/api/entry/get?fromDate=${fromDate}&toDate=${toDate}`);
-
-    // Fetch doors/resources for door names
-    let doors = [];
-    try {
-      const resources = await zoeziFetch(domain, apiKey, '/api/resource/get/all');
-      doors = resources || [];
-    } catch (e) {
-      console.log('Could not fetch resources:', e.message);
-    }
+    // Fetch entries using the efficient stats/generic API
+    const entriesResponse = await fetchZoeziEntries(domain, apiKey, fromDate, toDate);
 
     // Process analytics
-    const analytics = processEntryAnalytics(entries, doors);
+    const analytics = processEntryAnalytics(entriesResponse);
 
     res.json({
       ...analytics,
@@ -578,20 +642,11 @@ app.get('/api/embed/analytics', async (req, res) => {
     const domain = club.Zoezi_Domain;
     const apiKey = club.Zoezi_Api_Key;
 
-    // Fetch entries
-    const entries = await zoeziFetch(domain, apiKey, `/api/entry/get?fromDate=${fromDate}&toDate=${toDate}`);
-
-    // Fetch doors
-    let doors = [];
-    try {
-      const resources = await zoeziFetch(domain, apiKey, '/api/resource/get/all');
-      doors = resources || [];
-    } catch (e) {
-      console.log('Could not fetch resources:', e.message);
-    }
+    // Fetch entries using the efficient stats/generic API
+    const entriesResponse = await fetchZoeziEntries(domain, apiKey, fromDate, toDate);
 
     // Process analytics
-    const analytics = processEntryAnalytics(entries, doors);
+    const analytics = processEntryAnalytics(entriesResponse);
 
     res.json({
       ...analytics,
