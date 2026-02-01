@@ -154,8 +154,8 @@ async function zoeziFetch(domain, apiKey, endpoint, maxRetries = 3) {
   }
 }
 
-// Zoezi Stats API - POST method for efficient entry data fetching
-async function fetchZoeziEntries(domain, apiKey, fromDate, toDate, maxRetries = 3) {
+// Fetch entries using stats/generic API (efficient - only fetches needed properties)
+async function fetchEntriesViaStatsApi(domain, apiKey, fromDate, toDate) {
   const url = `https://${domain}/api/stats/generic`;
 
   const requestBody = {
@@ -183,42 +183,103 @@ async function fetchZoeziEntries(domain, apiKey, fromDate, toDate, maxRetries = 
     sortDescending: true
   };
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      console.log(`Fetching entries from ${domain} (${fromDate} to ${toDate}), attempt ${attempt}`);
+  console.log(`[stats/generic] Fetching entries from ${domain} (${fromDate} to ${toDate})`);
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'Authorization': `Zoezi ${apiKey}`
-        },
-        body: JSON.stringify(requestBody)
-      });
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'Authorization': `Zoezi ${apiKey}`
+    },
+    body: JSON.stringify(requestBody)
+  });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Zoezi API error: ${response.status} - ${errorText}`);
-      }
-
-      const result = await response.json();
-      console.log(`Fetched ${result.data?.length || 0} entries`);
-      return result;
-    } catch (error) {
-      console.error(`Attempt ${attempt}/${maxRetries} failed:`, error.message);
-      if (attempt === maxRetries) throw error;
-      await new Promise(r => setTimeout(r, attempt * 2000));
-    }
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`stats/generic API error: ${response.status} - ${errorText}`);
   }
+
+  const result = await response.json();
+  console.log(`[stats/generic] Fetched ${result.data?.length || 0} entries`);
+
+  // Transform to normalized format
+  return {
+    data: (result.data || []).map(e => ({
+      entryTime: e.date,
+      success: e.success !== false,
+      user_id: e['user.id'],
+      memberName: e['user.name'] || null,
+      memberEmail: e['user.mail'] || null,
+      door: e['door.id'],
+      doorName: e['door.name'] || `Door ${e['door.id']}`,
+      cardName: e['trainingcard.name'] || 'Unknown',
+      reason: e.reason || null
+    }))
+  };
+}
+
+// Fetch entries using simple entry/get API (slower but always works)
+async function fetchEntriesViaEntryApi(domain, apiKey, fromDate, toDate) {
+  const url = `https://${domain}/api/entry/get?fromDate=${fromDate}&toDate=${toDate}`;
+
+  console.log(`[entry/get] Fetching entries from ${domain} (${fromDate} to ${toDate})`);
+
+  const response = await fetch(url, {
+    headers: {
+      'Authorization': apiKey,
+      'Content-Type': 'application/json'
+    }
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`entry/get API error: ${response.status} - ${errorText}`);
+  }
+
+  const entries = await response.json();
+  console.log(`[entry/get] Fetched ${entries?.length || 0} entries`);
+
+  // Transform to normalized format
+  return {
+    data: (entries || []).map(e => ({
+      entryTime: e.entryTime,
+      success: e.success !== false,
+      user_id: e.user_id,
+      memberName: e.Member ? `${e.Member.firstname || ''} ${e.Member.lastname || ''}`.trim() : null,
+      memberEmail: e.Member?.mail || null,
+      door: e.door,
+      doorName: e.doorName || `Door ${e.door}`,
+      cardName: e.cardName || 'Unknown',
+      reason: e.reason || null
+    }))
+  };
+}
+
+// Main entry fetching function - tries efficient API first, falls back to simple API
+async function fetchZoeziEntries(domain, apiKey, fromDate, toDate) {
+  // Try the efficient stats/generic API first
+  try {
+    const result = await fetchEntriesViaStatsApi(domain, apiKey, fromDate, toDate);
+    if (result.data && result.data.length > 0) {
+      return result;
+    }
+    console.log('[stats/generic] Returned empty data, trying entry/get...');
+  } catch (error) {
+    console.error('[stats/generic] Failed:', error.message);
+    console.log('Falling back to entry/get API...');
+  }
+
+  // Fall back to the simple entry/get API
+  return await fetchEntriesViaEntryApi(domain, apiKey, fromDate, toDate);
 }
 
 // Process entry data into analytics
-// Handles data from /api/stats/generic which has flattened properties like "user.id", "door.name"
+// Expects normalized data format from fetchZoeziEntries
 function processEntryAnalytics(apiResponse) {
-  const entries = apiResponse?.data || [];
+  const normalizedEntries = apiResponse?.data || [];
 
-  if (!entries || entries.length === 0) {
+  if (!normalizedEntries || normalizedEntries.length === 0) {
     return {
       summary: {
         totalEntries: 0,
@@ -240,19 +301,6 @@ function processEntryAnalytics(apiResponse) {
       rawEntries: []
     };
   }
-
-  // Normalize entries from stats API format
-  const normalizedEntries = entries.map(e => ({
-    entryTime: e.date,
-    success: e.success !== false, // Default to true if not specified
-    user_id: e['user.id'],
-    memberName: e['user.name'] || null,
-    memberEmail: e['user.mail'] || null,
-    door: e['door.id'],
-    doorName: e['door.name'] || `Door ${e['door.id']}`,
-    cardName: e['trainingcard.name'] || 'Unknown',
-    reason: e.reason || null
-  }));
 
   // Create door lookup from the data itself
   const doorLookup = {};
