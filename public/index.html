@@ -64,6 +64,7 @@
       background: white; border-radius: 0.75rem; box-shadow: 0 10px 40px rgba(0,0,0,0.15);
       z-index: 100; min-width: 280px; max-height: 400px; overflow-y: auto;
     }
+    .multiselect-dropdown.dropdown-left .dropdown-content { right: auto; left: 0; }
     .multiselect-dropdown.open .dropdown-content { display: block; }
 
     .status-badge { display: inline-flex; align-items: center; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
@@ -179,7 +180,7 @@
 
           <div class="flex flex-wrap items-center gap-3">
             <!-- Site Filter (hidden if only 1 site) -->
-            <div id="site-filter-container" class="multiselect-dropdown hidden">
+            <div id="site-filter-container" class="multiselect-dropdown dropdown-left hidden">
               <button onclick="toggleSiteFilter()" class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 hover:border-strongsales-300 transition-all">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path>
