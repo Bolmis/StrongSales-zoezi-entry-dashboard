@@ -422,7 +422,8 @@ function processEntryAnalytics(apiResponse) {
       cardName: e.cardName,
       door: e.door,
       doorName: e.doorName,
-      reason: e.reason
+      reason: e.reason,
+      sites: e.sites
     }))
   };
 }
@@ -550,9 +551,13 @@ app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
     // Fetch entries using idOnly=True (fast!)
     const entriesResponse = await fetchZoeziEntries(domain, apiKey, fromDate, toDate);
 
-    // Optionally fetch door names to enrich the data
+    // Fetch door names and sites in parallel
+    let sites = [];
     try {
-      const resources = await zoeziFetch(domain, apiKey, '/api/resource/get/all');
+      const [resources, sitesData] = await Promise.all([
+        zoeziFetch(domain, apiKey, '/api/resource/get/all').catch(() => null),
+        zoeziFetch(domain, apiKey, '/api/site/get/all').catch(() => null)
+      ]);
       if (resources && resources.length > 0) {
         const doorMap = {};
         resources.forEach(r => { doorMap[r.id] = r.name; });
@@ -562,8 +567,11 @@ app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
           }
         });
       }
+      if (sitesData && sitesData.length > 0) {
+        sites = sitesData.map(s => ({ id: s.id, name: s.name }));
+      }
     } catch (e) {
-      console.log('Could not fetch door names:', e.message);
+      console.log('Could not fetch door names or sites:', e.message);
     }
 
     // Process analytics
@@ -576,6 +584,7 @@ app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
         name: club.Club_name,
         domain: club.Zoezi_Domain
       },
+      sites,
       dateRange: { fromDate, toDate }
     });
   } catch (error) {
@@ -631,9 +640,13 @@ app.get('/api/embed/analytics', async (req, res) => {
     // Fetch entries using idOnly=True (fast!)
     const entriesResponse = await fetchZoeziEntries(domain, apiKey, fromDate, toDate);
 
-    // Optionally fetch door names to enrich the data
+    // Fetch door names and sites in parallel
+    let sites = [];
     try {
-      const resources = await zoeziFetch(domain, apiKey, '/api/resource/get/all');
+      const [resources, sitesData] = await Promise.all([
+        zoeziFetch(domain, apiKey, '/api/resource/get/all').catch(() => null),
+        zoeziFetch(domain, apiKey, '/api/site/get/all').catch(() => null)
+      ]);
       if (resources && resources.length > 0) {
         const doorMap = {};
         resources.forEach(r => { doorMap[r.id] = r.name; });
@@ -643,8 +656,11 @@ app.get('/api/embed/analytics', async (req, res) => {
           }
         });
       }
+      if (sitesData && sitesData.length > 0) {
+        sites = sitesData.map(s => ({ id: s.id, name: s.name }));
+      }
     } catch (e) {
-      console.log('Could not fetch door names:', e.message);
+      console.log('Could not fetch door names or sites:', e.message);
     }
 
     // Process analytics
@@ -657,6 +673,7 @@ app.get('/api/embed/analytics', async (req, res) => {
         name: club.Club_name,
         domain: club.Zoezi_Domain
       },
+      sites,
       dateRange: { fromDate, toDate }
     });
   } catch (error) {

@@ -178,6 +178,31 @@
           </div>
 
           <div class="flex flex-wrap items-center gap-3">
+            <!-- Site Filter (hidden if only 1 site) -->
+            <div id="site-filter-container" class="multiselect-dropdown hidden">
+              <button onclick="toggleSiteFilter()" class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 hover:border-strongsales-300 transition-all">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path>
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                </svg>
+                <span id="site-filter-label">All Sites</span>
+                <svg class="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                </svg>
+              </button>
+              <div class="dropdown-content p-4">
+                <div class="flex items-center justify-between mb-3 pb-3 border-b border-gray-100">
+                  <span class="text-sm font-semibold text-gray-700">Filter by Site</span>
+                  <div class="flex gap-2">
+                    <button onclick="selectAllSites()" class="text-xs text-strongsales-600 hover:text-strongsales-700 font-medium">All</button>
+                    <span class="text-gray-300">|</span>
+                    <button onclick="clearAllSites()" class="text-xs text-gray-500 hover:text-gray-700 font-medium">Clear</button>
+                  </div>
+                </div>
+                <div id="site-checkboxes" class="space-y-2 max-h-60 overflow-y-auto"></div>
+              </div>
+            </div>
+
             <!-- Door Filter -->
             <div id="door-filter-container" class="multiselect-dropdown">
               <button onclick="toggleDoorFilter()" class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 hover:border-strongsales-300 transition-all">
@@ -317,6 +342,14 @@
             </div>
           </div>
 
+          <!-- Site Distribution Chart (hidden if only 1 site) -->
+          <div id="site-chart-container" class="bg-white rounded-2xl p-6 card-shadow hidden">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Site Distribution</h3>
+            <div class="h-72">
+              <canvas id="sites-chart"></canvas>
+            </div>
+          </div>
+
           <!-- Door Usage Chart -->
           <div class="bg-white rounded-2xl p-6 card-shadow">
             <h3 class="text-lg font-semibold text-gray-900 mb-4">Door Usage</h3>
@@ -409,6 +442,8 @@
     let charts = {};
     let selectedDoors = new Set();
     let allDoors = [];
+    let selectedSites = new Set();
+    let allSites = [];
     let currentPage = 1;
     const entriesPerPage = 20;
     let uniqueVisitsOnly = false;
@@ -524,6 +559,15 @@
 
         rawAnalytics = await response.json();
 
+        // Initialize sites
+        allSites = rawAnalytics.sites || [];
+        selectedSites = new Set(allSites.map(s => String(s.id)));
+
+        // Show/hide site filter and chart based on number of sites
+        const showSites = allSites.length > 1;
+        document.getElementById('site-filter-container').classList.toggle('hidden', !showSites);
+        document.getElementById('site-chart-container').classList.toggle('hidden', !showSites);
+
         // Initialize doors (normalize IDs to strings for consistent comparison)
         allDoors = rawAnalytics.byDoor || [];
         selectedDoors = new Set(allDoors.map(d => String(d.id)));
@@ -545,6 +589,14 @@
 
       // Filter raw entries
       let filteredEntries = rawAnalytics.rawEntries.filter(e => {
+        // Site filter (entry has array of site IDs)
+        if (allSites.length > 1 && selectedSites.size > 0) {
+          const entrySites = (e.sites || []).map(String);
+          if (entrySites.length > 0 && !entrySites.some(s => selectedSites.has(s))) {
+            return false;
+          }
+        }
+
         // Door filter (normalize to string for comparison)
         const doorId = e.door != null ? String(e.door) : 'unknown';
         if (!selectedDoors.has(doorId)) {
@@ -787,6 +839,12 @@
       document.getElementById('stat-peak-hour').textContent = summary.peakHour || 'N/A';
       document.getElementById('stat-peak-day').textContent = summary.peakDay || 'N/A';
 
+      // Render site filter and chart
+      if (allSites.length > 1) {
+        renderSiteFilter();
+        renderSiteDistributionChart(rawEntries);
+      }
+
       // Render door filter
       renderDoorFilter();
 
@@ -864,13 +922,128 @@
       document.getElementById('door-filter-container').classList.toggle('open');
     }
 
-    // Close dropdown when clicking outside
+    // Close dropdowns when clicking outside
     document.addEventListener('click', (e) => {
-      const container = document.getElementById('door-filter-container');
-      if (!container.contains(e.target)) {
-        container.classList.remove('open');
+      const doorContainer = document.getElementById('door-filter-container');
+      if (!doorContainer.contains(e.target)) {
+        doorContainer.classList.remove('open');
+      }
+      const siteContainer = document.getElementById('site-filter-container');
+      if (!siteContainer.contains(e.target)) {
+        siteContainer.classList.remove('open');
       }
     });
+
+    // ===== SITE FILTER =====
+    function renderSiteFilter() {
+      const container = document.getElementById('site-checkboxes');
+      container.innerHTML = '';
+
+      allSites.forEach(site => {
+        const siteIdStr = String(site.id);
+        const div = document.createElement('div');
+        div.className = 'flex items-center gap-2';
+        div.innerHTML = `
+          <input type="checkbox" id="site-${siteIdStr}" value="${siteIdStr}"
+            ${selectedSites.has(siteIdStr) ? 'checked' : ''}
+            onchange="toggleSite('${siteIdStr}')"
+            class="w-4 h-4 rounded border-gray-300 text-strongsales-600 focus:ring-strongsales-300">
+          <label for="site-${siteIdStr}" class="text-sm text-gray-700 cursor-pointer flex-1">${site.name}</label>
+        `;
+        container.appendChild(div);
+      });
+
+      updateSiteFilterLabel();
+    }
+
+    function toggleSite(siteId) {
+      if (selectedSites.has(siteId)) {
+        selectedSites.delete(siteId);
+      } else {
+        selectedSites.add(siteId);
+      }
+      updateSiteFilterLabel();
+      applyFilters();
+    }
+
+    function selectAllSites() {
+      selectedSites = new Set(allSites.map(s => String(s.id)));
+      document.querySelectorAll('#site-checkboxes input').forEach(cb => cb.checked = true);
+      updateSiteFilterLabel();
+      applyFilters();
+    }
+
+    function clearAllSites() {
+      selectedSites.clear();
+      document.querySelectorAll('#site-checkboxes input').forEach(cb => cb.checked = false);
+      updateSiteFilterLabel();
+      applyFilters();
+    }
+
+    function updateSiteFilterLabel() {
+      const label = document.getElementById('site-filter-label');
+      if (selectedSites.size === 0) {
+        label.textContent = 'No Sites';
+      } else if (selectedSites.size === allSites.length) {
+        label.textContent = 'All Sites';
+      } else {
+        const names = allSites.filter(s => selectedSites.has(String(s.id))).map(s => s.name);
+        label.textContent = names.length <= 2 ? names.join(', ') : `${selectedSites.size} of ${allSites.length}`;
+      }
+    }
+
+    function toggleSiteFilter() {
+      document.getElementById('site-filter-container').classList.toggle('open');
+    }
+
+    function renderSiteDistributionChart(entries) {
+      destroyChart('sites');
+      const ctx = document.getElementById('sites-chart').getContext('2d');
+
+      // Count entries per site
+      const siteMap = {};
+      allSites.forEach(s => { siteMap[String(s.id)] = { name: s.name, count: 0 }; });
+
+      entries.forEach(e => {
+        const entrySites = (e.sites || []).map(String);
+        entrySites.forEach(sId => {
+          if (siteMap[sId]) {
+            siteMap[sId].count++;
+          }
+        });
+      });
+
+      const siteData = Object.values(siteMap).filter(s => s.count > 0).sort((a, b) => b.count - a.count);
+      const totalEntries = siteData.reduce((sum, s) => sum + s.count, 0);
+
+      charts['sites'] = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+          labels: siteData.map(s => s.name),
+          datasets: [{
+            data: siteData.map(s => s.count),
+            backgroundColor: chartColors.purple.slice(0, siteData.length),
+            borderWidth: 0
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'right' },
+            tooltip: {
+              callbacks: {
+                label: function(context) {
+                  const value = context.raw;
+                  const pct = totalEntries > 0 ? ((value / totalEntries) * 100).toFixed(1) : 0;
+                  return `${context.label}: ${value.toLocaleString()} (${pct}%)`;
+                }
+              }
+            }
+          }
+        }
+      });
+    }
 
     // ===== CHARTS =====
     const chartColors = {
