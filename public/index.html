@@ -590,7 +590,8 @@
       // Filter raw entries
       let filteredEntries = rawAnalytics.rawEntries.filter(e => {
         // Site filter (entry has array of site IDs)
-        if (allSites.length > 1 && selectedSites.size > 0) {
+        if (allSites.length > 1) {
+          if (selectedSites.size === 0) return false;
           const entrySites = (e.sites || []).map(String);
           if (entrySites.length > 0 && !entrySites.some(s => selectedSites.has(s))) {
             return false;
@@ -616,7 +617,8 @@
         filteredEntries = deduplicateByUserAndDate(filteredEntries);
       }
 
-      // Recalculate analytics from filtered entries
+      // Reset pagination and recalculate analytics from filtered entries
+      currentPage = 1;
       analytics = recalculateAnalytics(filteredEntries);
       analytics.club = rawAnalytics.club;
       analytics.dateRange = rawAnalytics.dateRange;
