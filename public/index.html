@@ -227,6 +227,30 @@
               </div>
             </div>
 
+            <!-- Card Filter -->
+            <div id="card-filter-container" class="multiselect-dropdown">
+              <button onclick="toggleCardFilter()" class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 hover:border-strongsales-300 transition-all">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path>
+                </svg>
+                <span id="card-filter-label">All Cards</span>
+                <svg class="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                </svg>
+              </button>
+              <div class="dropdown-content p-4">
+                <div class="flex items-center justify-between mb-3 pb-3 border-b border-gray-100">
+                  <span class="text-sm font-semibold text-gray-700">Filter by Card</span>
+                  <div class="flex gap-2">
+                    <button onclick="selectAllCards()" class="text-xs text-strongsales-600 hover:text-strongsales-700 font-medium">All</button>
+                    <span class="text-gray-300">|</span>
+                    <button onclick="clearAllCards()" class="text-xs text-gray-500 hover:text-gray-700 font-medium">Clear</button>
+                  </div>
+                </div>
+                <div id="card-checkboxes" class="space-y-2 max-h-60 overflow-y-auto"></div>
+              </div>
+            </div>
+
             <!-- Status Filter -->
             <select id="status-filter" onchange="applyFilters()" class="px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 focus:ring-2 focus:ring-strongsales-300 focus:border-transparent outline-none transition-all cursor-pointer">
               <option value="all">All Entries</option>
@@ -444,6 +468,8 @@
     let allDoors = [];
     let selectedSites = new Set();
     let allSites = [];
+    let selectedCards = new Set();
+    let allCards = [];
     let currentPage = 1;
     const entriesPerPage = 20;
     let uniqueVisitsOnly = false;
@@ -572,6 +598,10 @@
         allDoors = rawAnalytics.byDoor || [];
         selectedDoors = new Set(allDoors.map(d => String(d.id)));
 
+        // Initialize cards from byCardType
+        allCards = (rawAnalytics.byCardType || []).map(c => c.name);
+        selectedCards = new Set(allCards);
+
         // Apply filters and render
         applyFilters();
         showState('analytics');
@@ -603,6 +633,11 @@
         if (!selectedDoors.has(doorId)) {
           return false;
         }
+
+        // Card filter
+        if (selectedCards.size === 0) return false;
+        const cardName = e.cardName || 'Unknown';
+        if (!selectedCards.has(cardName)) return false;
 
         // Status filter
         if (statusFilter === 'success' && !e.success) return false;
@@ -847,8 +882,9 @@
         renderSiteDistributionChart(rawEntries);
       }
 
-      // Render door filter
+      // Render door and card filters
       renderDoorFilter();
+      renderCardFilter();
 
       // Render charts
       renderTrendChart(dailyTrend);
@@ -934,6 +970,10 @@
       if (!siteContainer.contains(e.target)) {
         siteContainer.classList.remove('open');
       }
+      const cardContainer = document.getElementById('card-filter-container');
+      if (!cardContainer.contains(e.target)) {
+        cardContainer.classList.remove('open');
+      }
     });
 
     // ===== SITE FILTER =====
@@ -996,6 +1036,84 @@
 
     function toggleSiteFilter() {
       document.getElementById('site-filter-container').classList.toggle('open');
+    }
+
+    // ===== CARD FILTER =====
+    function renderCardFilter() {
+      const container = document.getElementById('card-checkboxes');
+      container.innerHTML = '';
+
+      // Use allCards for checkbox list, but show counts from current raw data
+      const cardCounts = {};
+      (rawAnalytics.byCardType || []).forEach(c => { cardCounts[c.name] = c.total; });
+
+      allCards.forEach(cardName => {
+        const div = document.createElement('div');
+        div.className = 'flex items-center gap-2';
+        const cbId = 'card-' + cardName.replace(/[^a-zA-Z0-9]/g, '_');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.id = cbId;
+        checkbox.checked = selectedCards.has(cardName);
+        checkbox.className = 'w-4 h-4 rounded border-gray-300 text-strongsales-600 focus:ring-strongsales-300';
+        checkbox.addEventListener('change', () => toggleCard(cardName));
+
+        const label = document.createElement('label');
+        label.htmlFor = cbId;
+        label.className = 'text-sm text-gray-700 cursor-pointer flex-1 truncate';
+        label.title = cardName;
+        label.textContent = cardName;
+
+        const count = document.createElement('span');
+        count.className = 'text-xs text-gray-400';
+        count.textContent = cardCounts[cardName] || 0;
+
+        div.appendChild(checkbox);
+        div.appendChild(label);
+        div.appendChild(count);
+        container.appendChild(div);
+      });
+
+      updateCardFilterLabel();
+    }
+
+    function toggleCard(cardName) {
+      if (selectedCards.has(cardName)) {
+        selectedCards.delete(cardName);
+      } else {
+        selectedCards.add(cardName);
+      }
+      updateCardFilterLabel();
+      applyFilters();
+    }
+
+    function selectAllCards() {
+      selectedCards = new Set(allCards);
+      document.querySelectorAll('#card-checkboxes input').forEach(cb => cb.checked = true);
+      updateCardFilterLabel();
+      applyFilters();
+    }
+
+    function clearAllCards() {
+      selectedCards.clear();
+      document.querySelectorAll('#card-checkboxes input').forEach(cb => cb.checked = false);
+      updateCardFilterLabel();
+      applyFilters();
+    }
+
+    function updateCardFilterLabel() {
+      const label = document.getElementById('card-filter-label');
+      if (selectedCards.size === 0) {
+        label.textContent = 'No Cards';
+      } else if (selectedCards.size === allCards.length) {
+        label.textContent = 'All Cards';
+      } else {
+        label.textContent = `${selectedCards.size} of ${allCards.length}`;
+      }
+    }
+
+    function toggleCardFilter() {
+      document.getElementById('card-filter-container').classList.toggle('open');
     }
 
     function renderSiteDistributionChart(entries) {
