@@ -555,7 +555,7 @@ app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
     let sites = [];
     try {
       const [resources, sitesData] = await Promise.all([
-        zoeziFetch(domain, apiKey, '/api/resource/get/all').catch(() => null),
+        zoeziFetch(domain, apiKey, '/api/resource/get').catch(() => null),
         zoeziFetch(domain, apiKey, '/api/site/get/all').catch(() => null)
       ]);
       if (resources && resources.length > 0) {
@@ -644,7 +644,7 @@ app.get('/api/embed/analytics', async (req, res) => {
     let sites = [];
     try {
       const [resources, sitesData] = await Promise.all([
-        zoeziFetch(domain, apiKey, '/api/resource/get/all').catch(() => null),
+        zoeziFetch(domain, apiKey, '/api/resource/get').catch(() => null),
         zoeziFetch(domain, apiKey, '/api/site/get/all').catch(() => null)
       ]);
       if (resources && resources.length > 0) {
