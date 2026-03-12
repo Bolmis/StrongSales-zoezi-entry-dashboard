@@ -249,18 +249,16 @@ function processEntryAnalytics(apiResponse) {
   }));
   const avgEntriesPerDay = uniqueDates.size > 0 ? (totalEntries / uniqueDates.size).toFixed(1) : 0;
 
-  // By hour analysis (5am - 11pm)
+  // By hour analysis (all 24 hours)
   const hourCounts = {};
-  for (let h = 5; h <= 23; h++) {
+  for (let h = 0; h <= 23; h++) {
     hourCounts[h] = { total: 0, successful: 0 };
   }
 
   normalizedEntries.forEach(e => {
     const hour = new Date(e.entryTime).getHours();
-    if (hour >= 5 && hour <= 23) {
-      hourCounts[hour].total++;
-      if (e.success) hourCounts[hour].successful++;
-    }
+    hourCounts[hour].total++;
+    if (e.success) hourCounts[hour].successful++;
   });
 
   const byHour = Object.entries(hourCounts).map(([hour, data]) => ({
@@ -526,6 +524,7 @@ app.get('/api/gyms', isAuthenticated, async (req, res) => {
 
 // Get entry analytics for a club
 app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
+  req.setTimeout(120000);
   try {
     const { clubId } = req.params;
     const { fromDate, toDate } = req.query;
@@ -605,6 +604,7 @@ app.get('/api/verify-token', (req, res) => {
 
 // Embed analytics endpoint (token-authenticated)
 app.get('/api/embed/analytics', async (req, res) => {
+  req.setTimeout(120000);
   try {
     const { token, fromDate, toDate } = req.query;
 
@@ -765,8 +765,8 @@ app.get('/', (req, res, next) => {
 // Static files - AFTER root route protection
 app.use(express.static('public'));
 
-// Start server
-app.listen(PORT, '0.0.0.0', () => {
+// Start server with extended timeouts for slow Zoezi API responses
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
@@ -778,3 +778,8 @@ app.listen(PORT, '0.0.0.0', () => {
 ╚═══════════════════════════════════════════════════════════════╝
   `);
 });
+
+// Allow up to 2 minutes for slow Zoezi API fetches (Replit proxy can kill idle connections)
+server.timeout = 120000;
+server.keepAliveTimeout = 120000;
+server.headersTimeout = 125000;
