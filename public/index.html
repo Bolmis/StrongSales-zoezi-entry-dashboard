@@ -315,6 +315,16 @@
           </div>
         </div>
 
+        <!-- Large dataset banner -->
+        <div id="large-dataset-banner" class="hidden mb-6 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-center gap-3">
+          <svg class="w-5 h-5 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+          <p class="text-sm text-amber-800">
+            <strong>Large dataset</strong> — Showing server-computed analytics only. Filters, entry table, and CSV export are disabled for datasets over 100,000 entries. Reduce the date range for full functionality.
+          </p>
+        </div>
+
         <!-- Summary Cards -->
         <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
           <!-- Total Entries -->
@@ -650,17 +660,22 @@
         if (!responses[0].ok) throw new Error('Failed to load analytics');
         rawAnalytics = await responses[0].json();
         // Backend sends entries separately — attach as rawEntries for filtering/export
-        if (rawAnalytics.entries && !rawAnalytics.rawEntries) {
+        if (rawAnalytics.entries) {
           rawAnalytics.rawEntries = rawAnalytics.entries;
           delete rawAnalytics.entries;
+        } else {
+          // Large dataset — no entries sent, use empty array (analytics-only mode)
+          rawAnalytics.rawEntries = [];
         }
 
         if (comparisonMode && responses[1]) {
           if (!responses[1].ok) throw new Error('Failed to load comparison data');
           compareRawAnalytics = await responses[1].json();
-          if (compareRawAnalytics.entries && !compareRawAnalytics.rawEntries) {
+          if (compareRawAnalytics.entries) {
             compareRawAnalytics.rawEntries = compareRawAnalytics.entries;
             delete compareRawAnalytics.entries;
+          } else {
+            compareRawAnalytics.rawEntries = [];
           }
         } else {
           compareRawAnalytics = null;
@@ -683,6 +698,10 @@
         allCards = (rawAnalytics.byCardType || []).map(c => c.name);
         selectedCards = new Set(allCards);
 
+        // Show/hide large dataset banner and toggle filter controls
+        const largeDataset = !rawAnalytics.entriesIncluded;
+        document.getElementById('large-dataset-banner').classList.toggle('hidden', !largeDataset);
+
         // Apply filters and render
         applyFilters();
         showState('analytics');
@@ -695,6 +714,41 @@
     // ===== FILTERING =====
     function applyFilters() {
       if (!rawAnalytics) return;
+
+      // Large dataset mode — entries not sent, use server-computed analytics directly
+      if (!rawAnalytics.entriesIncluded) {
+        currentPage = 1;
+        analytics = {
+          summary: rawAnalytics.summary,
+          byHour: rawAnalytics.byHour,
+          byDay: rawAnalytics.byDay,
+          byDoor: rawAnalytics.byDoor,
+          byCardType: rawAnalytics.byCardType,
+          dailyTrend: rawAnalytics.dailyTrend,
+          topVisitors: rawAnalytics.topVisitors,
+          failedReasons: rawAnalytics.failedReasons,
+          rawEntries: [],
+          club: rawAnalytics.club,
+          dateRange: rawAnalytics.dateRange
+        };
+        if (comparisonMode && compareRawAnalytics) {
+          compareAnalytics = {
+            summary: compareRawAnalytics.summary,
+            byHour: compareRawAnalytics.byHour,
+            byDay: compareRawAnalytics.byDay,
+            byDoor: compareRawAnalytics.byDoor,
+            byCardType: compareRawAnalytics.byCardType,
+            dailyTrend: compareRawAnalytics.dailyTrend,
+            topVisitors: compareRawAnalytics.topVisitors,
+            failedReasons: compareRawAnalytics.failedReasons,
+            rawEntries: []
+          };
+        } else {
+          compareAnalytics = null;
+        }
+        renderDashboard();
+        return;
+      }
 
       const statusFilter = document.getElementById('status-filter').value;
 

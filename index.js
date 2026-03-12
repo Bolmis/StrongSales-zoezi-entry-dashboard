@@ -155,6 +155,8 @@ async function zoeziFetch(domain, apiKey, endpoint, maxRetries = 3) {
 }
 
 // Fetch entries using idOnly=True (FAST - returns essential data without heavy Member object)
+// Returns raw Zoezi array directly — no normalization copy to save memory.
+// Raw fields: id, user_id, member_id, entryTime, success, door, sites, externaldoorid, reason, cardName
 async function fetchZoeziEntries(domain, apiKey, fromDate, toDate) {
   const url = `https://${domain}/api/entry/get?fromDate=${fromDate}&toDate=${toDate}&idOnly=True`;
 
@@ -177,87 +179,117 @@ async function fetchZoeziEntries(domain, apiKey, fromDate, toDate) {
   const duration = Date.now() - startTime;
   console.log(`[entry/get idOnly] Fetched ${entries?.length || 0} entries in ${duration}ms`);
 
-  // Transform to normalized format
-  // idOnly=True returns: id, user_id, member_id, entryTime, success, door, sites, externaldoorid, reason, cardName
-  return {
-    data: (entries || []).map(e => ({
-      entryTime: e.entryTime,
-      success: e.success !== false,
-      userId: e.user_id || e.member_id,
-      memberName: null, // Not available with idOnly, but we have userId
-      door: e.door,
-      doorName: `Door ${e.door}`, // Will be enriched later if door names are fetched
-      cardName: e.cardName || 'Unknown',
-      reason: e.reason || null,
-      sites: e.sites || []
-    }))
-  };
+  return entries || [];
 }
 
-// Process entry data into analytics
-// Expects normalized data format from fetchZoeziEntries
-function processEntryAnalytics(apiResponse) {
-  const normalizedEntries = apiResponse?.data || [];
+// Max entries to include in the response for client-side filtering.
+// Above this, only aggregated analytics are sent to avoid OOM.
+const ENTRIES_RESPONSE_LIMIT = 100000;
 
-  if (!normalizedEntries || normalizedEntries.length === 0) {
+// Process raw Zoezi entry data into analytics in a single pass.
+// Works directly with raw Zoezi field names to avoid creating a normalized copy.
+// doorMap is optional — maps door IDs to names from the resource API.
+function processEntryAnalytics(rawEntries, doorMap) {
+  if (!rawEntries || rawEntries.length === 0) {
     return {
       summary: {
-        totalEntries: 0,
-        successfulEntries: 0,
-        failedEntries: 0,
-        successRate: 0,
-        uniqueVisitors: 0,
-        avgEntriesPerDay: 0,
-        peakHour: null,
-        peakDay: null
+        totalEntries: 0, successfulEntries: 0, failedEntries: 0,
+        successRate: 0, uniqueVisitors: 0, avgEntriesPerDay: 0,
+        peakHour: null, peakDay: null
       },
-      byHour: [],
-      byDay: [],
-      byDoor: [],
-      byCardType: [],
-      dailyTrend: [],
-      topVisitors: [],
-      failedReasons: [],
-      rawEntries: []
+      byHour: [], byDay: [], byDoor: [], byCardType: [],
+      dailyTrend: [], topVisitors: [], failedReasons: [],
+      entryCount: 0
     };
   }
 
-  // Create door lookup from the data itself
-  const doorLookup = {};
-  normalizedEntries.forEach(e => {
-    if (e.door) {
-      doorLookup[e.door] = e.doorName;
-    }
-  });
+  doorMap = doorMap || {};
 
-  // Basic counts
-  const totalEntries = normalizedEntries.length;
-  const successfulEntries = normalizedEntries.filter(e => e.success).length;
-  const failedEntries = normalizedEntries.filter(e => !e.success).length;
-  const successRate = totalEntries > 0 ? ((successfulEntries / totalEntries) * 100).toFixed(1) : 0;
-
-  // Unique visitors
-  const uniqueVisitorIds = new Set(normalizedEntries.filter(e => e.userId).map(e => e.userId));
-  const uniqueVisitors = uniqueVisitorIds.size;
-
-  // Get unique dates
-  const uniqueDates = new Set(normalizedEntries.map(e => {
-    const d = new Date(e.entryTime);
-    return d.yyyymmdd();
-  }));
-  const avgEntriesPerDay = uniqueDates.size > 0 ? (totalEntries / uniqueDates.size).toFixed(1) : 0;
-
-  // By hour analysis (all 24 hours)
+  // Single-pass aggregation
   const hourCounts = {};
-  for (let h = 0; h <= 23; h++) {
-    hourCounts[h] = { total: 0, successful: 0 };
+  for (let h = 0; h <= 23; h++) hourCounts[h] = { total: 0, successful: 0 };
+
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const dayCounts = {};
+  dayNames.forEach((name, idx) => { dayCounts[idx] = { name, total: 0, successful: 0 }; });
+
+  const doorCounts = {};
+  const cardCounts = {};
+  const dailyCounts = {};
+  const visitorCounts = {};
+  const reasonCounts = {};
+  const uniqueVisitorIds = new Set();
+  const uniqueDates = new Set();
+  let successfulEntries = 0;
+
+  for (let i = 0; i < rawEntries.length; i++) {
+    const e = rawEntries[i];
+    const success = e.success !== false;
+    const userId = e.user_id || e.member_id;
+    const d = new Date(e.entryTime);
+    const hour = d.getHours();
+    const day = d.getDay();
+    const dateStr = d.yyyymmdd();
+    const doorId = e.door || 'unknown';
+    const cardName = e.cardName || 'Unknown';
+
+    if (success) successfulEntries++;
+
+    // Hour
+    hourCounts[hour].total++;
+    if (success) hourCounts[hour].successful++;
+
+    // Day of week
+    dayCounts[day].total++;
+    if (success) dayCounts[day].successful++;
+
+    // Door
+    if (!doorCounts[doorId]) {
+      doorCounts[doorId] = { id: doorId, name: doorMap[doorId] || `Door ${doorId}`, total: 0, successful: 0 };
+    }
+    doorCounts[doorId].total++;
+    if (success) doorCounts[doorId].successful++;
+
+    // Card type
+    if (!cardCounts[cardName]) {
+      cardCounts[cardName] = { name: cardName, total: 0, successful: 0 };
+    }
+    cardCounts[cardName].total++;
+    if (success) cardCounts[cardName].successful++;
+
+    // Daily trend
+    if (!dailyCounts[dateStr]) {
+      dailyCounts[dateStr] = { date: dateStr, total: 0, successful: 0, uniqueVisitors: new Set() };
+    }
+    dailyCounts[dateStr].total++;
+    if (success) dailyCounts[dateStr].successful++;
+    if (userId) dailyCounts[dateStr].uniqueVisitors.add(userId);
+
+    // Visitors
+    if (userId) {
+      uniqueVisitorIds.add(userId);
+      if (!visitorCounts[userId]) {
+        visitorCounts[userId] = { id: userId, name: `Member #${userId}`, entries: 0, lastVisit: null };
+      }
+      visitorCounts[userId].entries++;
+      if (!visitorCounts[userId].lastVisit || dateStr > visitorCounts[userId].lastVisit) {
+        visitorCounts[userId].lastVisit = dateStr;
+      }
+    }
+
+    // Failed reasons
+    if (!success && e.reason) {
+      if (!reasonCounts[e.reason]) reasonCounts[e.reason] = { reason: e.reason, count: 0 };
+      reasonCounts[e.reason].count++;
+    }
+
+    uniqueDates.add(dateStr);
   }
 
-  normalizedEntries.forEach(e => {
-    const hour = new Date(e.entryTime).getHours();
-    hourCounts[hour].total++;
-    if (e.success) hourCounts[hour].successful++;
-  });
+  const totalEntries = rawEntries.length;
+  const failedEntries = totalEntries - successfulEntries;
+  const successRate = totalEntries > 0 ? ((successfulEntries / totalEntries) * 100).toFixed(1) : 0;
+  const avgEntriesPerDay = uniqueDates.size > 0 ? (totalEntries / uniqueDates.size).toFixed(1) : 0;
 
   const byHour = Object.entries(hourCounts).map(([hour, data]) => ({
     hour: parseInt(hour),
@@ -267,170 +299,85 @@ function processEntryAnalytics(apiResponse) {
     successRate: data.total > 0 ? ((data.successful / data.total) * 100).toFixed(1) : 0
   }));
 
-  // Find peak hour
   const peakHourData = byHour.reduce((max, h) => h.total > max.total ? h : max, { total: 0 });
   const peakHour = peakHourData.total > 0 ? peakHourData.label : null;
 
-  // By day of week analysis
-  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const dayCounts = {};
-  dayNames.forEach((name, idx) => {
-    dayCounts[idx] = { name, total: 0, successful: 0 };
-  });
-
-  normalizedEntries.forEach(e => {
-    const day = new Date(e.entryTime).getDay();
-    dayCounts[day].total++;
-    if (e.success) dayCounts[day].successful++;
-  });
-
   const byDay = Object.entries(dayCounts).map(([dayIdx, data]) => ({
-    day: data.name,
-    dayIndex: parseInt(dayIdx),
-    total: data.total,
-    successful: data.successful,
+    day: data.name, dayIndex: parseInt(dayIdx), total: data.total, successful: data.successful,
     successRate: data.total > 0 ? ((data.successful / data.total) * 100).toFixed(1) : 0
   }));
 
-  // Find peak day
   const peakDayData = byDay.reduce((max, d) => d.total > max.total ? d : max, { total: 0 });
   const peakDay = peakDayData.total > 0 ? peakDayData.day : null;
 
-  // By door analysis
-  const doorCounts = {};
-  normalizedEntries.forEach(e => {
-    const doorId = e.door || 'unknown';
-    const doorName = e.doorName || doorLookup[doorId] || `Door ${doorId}`;
-    if (!doorCounts[doorId]) {
-      doorCounts[doorId] = { id: doorId, name: doorName, total: 0, successful: 0 };
-    }
-    doorCounts[doorId].total++;
-    if (e.success) doorCounts[doorId].successful++;
-  });
-
   const byDoor = Object.values(doorCounts)
-    .map(d => ({
-      ...d,
-      successRate: d.total > 0 ? ((d.successful / d.total) * 100).toFixed(1) : 0
-    }))
+    .map(d => ({ ...d, successRate: d.total > 0 ? ((d.successful / d.total) * 100).toFixed(1) : 0 }))
     .sort((a, b) => b.total - a.total);
-
-  // By card type analysis
-  const cardCounts = {};
-  normalizedEntries.forEach(e => {
-    const cardName = e.cardName || 'Unknown';
-    if (!cardCounts[cardName]) {
-      cardCounts[cardName] = { name: cardName, total: 0, successful: 0 };
-    }
-    cardCounts[cardName].total++;
-    if (e.success) cardCounts[cardName].successful++;
-  });
 
   const byCardType = Object.values(cardCounts)
-    .map(c => ({
-      ...c,
-      successRate: c.total > 0 ? ((c.successful / c.total) * 100).toFixed(1) : 0
-    }))
+    .map(c => ({ ...c, successRate: c.total > 0 ? ((c.successful / c.total) * 100).toFixed(1) : 0 }))
     .sort((a, b) => b.total - a.total);
-
-  // Daily trend
-  const dailyCounts = {};
-  normalizedEntries.forEach(e => {
-    const date = new Date(e.entryTime).yyyymmdd();
-    if (!dailyCounts[date]) {
-      dailyCounts[date] = { date, total: 0, successful: 0, uniqueVisitors: new Set() };
-    }
-    dailyCounts[date].total++;
-    if (e.success) dailyCounts[date].successful++;
-    if (e.userId) dailyCounts[date].uniqueVisitors.add(e.userId);
-  });
 
   const dailyTrend = Object.values(dailyCounts)
     .map(d => ({
-      date: d.date,
-      total: d.total,
-      successful: d.successful,
+      date: d.date, total: d.total, successful: d.successful,
       uniqueVisitors: d.uniqueVisitors.size,
       successRate: d.total > 0 ? ((d.successful / d.total) * 100).toFixed(1) : 0
     }))
     .sort((a, b) => a.date.localeCompare(b.date));
 
-  // Top visitors
-  const visitorCounts = {};
-  normalizedEntries.forEach(e => {
-    if (e.userId) {
-      if (!visitorCounts[e.userId]) {
-        visitorCounts[e.userId] = {
-          id: e.userId,
-          name: e.memberName || `Member #${e.userId}`,
-          entries: 0,
-          lastVisit: null
-        };
-      }
-      visitorCounts[e.userId].entries++;
-      const entryDate = new Date(e.entryTime);
-      if (!visitorCounts[e.userId].lastVisit || entryDate > new Date(visitorCounts[e.userId].lastVisit)) {
-        visitorCounts[e.userId].lastVisit = entryDate.yyyymmdd();
-      }
-    }
-  });
-
   const topVisitors = Object.values(visitorCounts)
     .sort((a, b) => b.entries - a.entries)
     .slice(0, 20);
-
-  // Failed entry reasons
-  const reasonCounts = {};
-  normalizedEntries.filter(e => !e.success && e.reason).forEach(e => {
-    const reason = e.reason;
-    if (!reasonCounts[reason]) {
-      reasonCounts[reason] = { reason, count: 0 };
-    }
-    reasonCounts[reason].count++;
-  });
 
   const failedReasons = Object.values(reasonCounts)
     .sort((a, b) => b.count - a.count);
 
   return {
     summary: {
-      totalEntries,
-      successfulEntries,
-      failedEntries,
-      successRate: parseFloat(successRate),
-      uniqueVisitors,
-      avgEntriesPerDay: parseFloat(avgEntriesPerDay),
-      peakHour,
-      peakDay
+      totalEntries, successfulEntries, failedEntries,
+      successRate: parseFloat(successRate), uniqueVisitors: uniqueVisitorIds.size,
+      avgEntriesPerDay: parseFloat(avgEntriesPerDay), peakHour, peakDay
     },
-    byHour,
-    byDay,
-    byDoor,
-    byCardType,
-    dailyTrend,
-    topVisitors,
-    failedReasons,
-    // rawEntries omitted to avoid OOM on large datasets — sent separately as 'entries'
-    entryCount: normalizedEntries.length
+    byHour, byDay, byDoor, byCardType, dailyTrend, topVisitors, failedReasons,
+    entryCount: totalEntries
   };
 }
 
-// Stream a JSON response with a large entries array without building the full string in memory.
-// Serializes each entry individually so peak memory stays low even for 300k+ entries.
-function streamAnalyticsResponse(res, analytics, entries, club, sites, dateRange) {
+// Stream a JSON response, optionally including raw entries for client-side filtering.
+// When entries are included, serializes each individually to avoid building a huge JSON string.
+// When entries is null (large dataset), sends only aggregated analytics.
+function streamAnalyticsResponse(res, analytics, rawEntries, doorMap, club, sites, dateRange) {
   res.setHeader('Content-Type', 'application/json');
 
-  // Build the response object without entries, serialize that small piece
-  const envelope = { ...analytics, club, sites, dateRange };
+  const includeEntries = rawEntries && rawEntries.length <= ENTRIES_RESPONSE_LIMIT;
+  const envelope = { ...analytics, entriesIncluded: includeEntries, club, sites, dateRange };
   const json = JSON.stringify(envelope);
 
-  // Insert the entries array before the closing brace
+  if (!includeEntries) {
+    res.end(json);
+    return;
+  }
+
+  // Stream entries one-by-one to avoid building a huge JSON string
   res.write(json.slice(0, -1)); // everything except final "}"
   res.write(',"entries":[');
 
-  for (let i = 0; i < entries.length; i++) {
+  for (let i = 0; i < rawEntries.length; i++) {
+    const e = rawEntries[i];
     if (i > 0) res.write(',');
-    res.write(JSON.stringify(entries[i]));
+    // Normalize field names for the frontend on-the-fly (no extra array copy)
+    res.write(JSON.stringify({
+      entryTime: e.entryTime,
+      success: e.success !== false,
+      userId: e.user_id || e.member_id,
+      memberName: null,
+      cardName: e.cardName || 'Unknown',
+      door: e.door,
+      doorName: doorMap[e.door] || `Door ${e.door}`,
+      reason: e.reason || null,
+      sites: e.sites || []
+    }));
   }
 
   res.write(']}');
@@ -558,10 +505,10 @@ app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
     const domain = club.Zoezi_Domain;
     const apiKey = club.Zoezi_Api_Key;
 
-    // Fetch entries using idOnly=True (fast!)
-    const entriesResponse = await fetchZoeziEntries(domain, apiKey, fromDate, toDate);
+    // Fetch entries and door/site metadata in parallel
+    const rawEntries = await fetchZoeziEntries(domain, apiKey, fromDate, toDate);
 
-    // Fetch door names and sites in parallel
+    let doorMap = {};
     let sites = [];
     try {
       const [resources, sitesData] = await Promise.all([
@@ -569,13 +516,7 @@ app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
         zoeziFetch(domain, apiKey, '/api/site/get/all').catch(() => null)
       ]);
       if (resources && resources.length > 0) {
-        const doorMap = {};
         resources.forEach(r => { doorMap[r.id] = r.name; });
-        entriesResponse.data.forEach(e => {
-          if (e.door && doorMap[e.door]) {
-            e.doorName = doorMap[e.door];
-          }
-        });
       }
       if (sitesData && sitesData.length > 0) {
         sites = sitesData.map(s => ({ id: s.id, name: s.name }));
@@ -584,11 +525,11 @@ app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
       console.log('Could not fetch door names or sites:', e.message);
     }
 
-    // Process analytics (without rawEntries to save memory)
-    const analytics = processEntryAnalytics(entriesResponse);
+    // Process analytics directly from raw Zoezi data (no normalization copy)
+    const analytics = processEntryAnalytics(rawEntries, doorMap);
 
-    // Stream response — serializes entries one-by-one to avoid OOM on JSON.stringify
-    streamAnalyticsResponse(res, analytics, entriesResponse.data,
+    // Stream response — entries only included if under 100k (otherwise OOM)
+    streamAnalyticsResponse(res, analytics, rawEntries, doorMap,
       { id: club.Club_Zoezi_ID, name: club.Club_name, domain: club.Zoezi_Domain },
       sites, { fromDate, toDate });
   } catch (error) {
@@ -642,10 +583,10 @@ app.get('/api/embed/analytics', async (req, res) => {
     const domain = club.Zoezi_Domain;
     const apiKey = club.Zoezi_Api_Key;
 
-    // Fetch entries using idOnly=True (fast!)
-    const entriesResponse = await fetchZoeziEntries(domain, apiKey, fromDate, toDate);
+    // Fetch entries and door/site metadata in parallel
+    const rawEntries = await fetchZoeziEntries(domain, apiKey, fromDate, toDate);
 
-    // Fetch door names and sites in parallel
+    let doorMap = {};
     let sites = [];
     try {
       const [resources, sitesData] = await Promise.all([
@@ -653,13 +594,7 @@ app.get('/api/embed/analytics', async (req, res) => {
         zoeziFetch(domain, apiKey, '/api/site/get/all').catch(() => null)
       ]);
       if (resources && resources.length > 0) {
-        const doorMap = {};
         resources.forEach(r => { doorMap[r.id] = r.name; });
-        entriesResponse.data.forEach(e => {
-          if (e.door && doorMap[e.door]) {
-            e.doorName = doorMap[e.door];
-          }
-        });
       }
       if (sitesData && sitesData.length > 0) {
         sites = sitesData.map(s => ({ id: s.id, name: s.name }));
@@ -668,11 +603,11 @@ app.get('/api/embed/analytics', async (req, res) => {
       console.log('Could not fetch door names or sites:', e.message);
     }
 
-    // Process analytics (without rawEntries to save memory)
-    const analytics = processEntryAnalytics(entriesResponse);
+    // Process analytics directly from raw Zoezi data (no normalization copy)
+    const analytics = processEntryAnalytics(rawEntries, doorMap);
 
-    // Stream response — serializes entries one-by-one to avoid OOM on JSON.stringify
-    streamAnalyticsResponse(res, analytics, entriesResponse.data,
+    // Stream response — entries only included if under 100k (otherwise OOM)
+    streamAnalyticsResponse(res, analytics, rawEntries, doorMap,
       { id: club.Club_Zoezi_ID, name: club.Club_name, domain: club.Zoezi_Domain },
       sites, { fromDate, toDate });
   } catch (error) {
