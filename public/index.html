@@ -649,10 +649,19 @@
 
         if (!responses[0].ok) throw new Error('Failed to load analytics');
         rawAnalytics = await responses[0].json();
+        // Backend sends entries separately — attach as rawEntries for filtering/export
+        if (rawAnalytics.entries && !rawAnalytics.rawEntries) {
+          rawAnalytics.rawEntries = rawAnalytics.entries;
+          delete rawAnalytics.entries;
+        }
 
         if (comparisonMode && responses[1]) {
           if (!responses[1].ok) throw new Error('Failed to load comparison data');
           compareRawAnalytics = await responses[1].json();
+          if (compareRawAnalytics.entries && !compareRawAnalytics.rawEntries) {
+            compareRawAnalytics.rawEntries = compareRawAnalytics.entries;
+            delete compareRawAnalytics.entries;
+          }
         } else {
           compareRawAnalytics = null;
         }

@@ -412,17 +412,8 @@ function processEntryAnalytics(apiResponse) {
     dailyTrend,
     topVisitors,
     failedReasons,
-    rawEntries: normalizedEntries.map(e => ({
-      entryTime: e.entryTime,
-      success: e.success,
-      userId: e.user_id,
-      memberName: e.memberName,
-      cardName: e.cardName,
-      door: e.door,
-      doorName: e.doorName,
-      reason: e.reason,
-      sites: e.sites
-    }))
+    // rawEntries omitted to avoid OOM on large datasets — sent separately as 'entries'
+    entryCount: normalizedEntries.length
   };
 }
 
@@ -573,11 +564,25 @@ app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
       console.log('Could not fetch door names or sites:', e.message);
     }
 
-    // Process analytics
+    // Process analytics (without rawEntries to save memory)
     const analytics = processEntryAnalytics(entriesResponse);
+
+    // Send slim entries array separately to avoid double-serialization OOM
+    const entries = entriesResponse.data.map(e => ({
+      entryTime: e.entryTime,
+      success: e.success,
+      userId: e.user_id,
+      memberName: e.memberName,
+      cardName: e.cardName,
+      door: e.door,
+      doorName: e.doorName,
+      reason: e.reason,
+      sites: e.sites
+    }));
 
     res.json({
       ...analytics,
+      entries,
       club: {
         id: club.Club_Zoezi_ID,
         name: club.Club_name,
@@ -663,11 +668,25 @@ app.get('/api/embed/analytics', async (req, res) => {
       console.log('Could not fetch door names or sites:', e.message);
     }
 
-    // Process analytics
+    // Process analytics (without rawEntries to save memory)
     const analytics = processEntryAnalytics(entriesResponse);
+
+    // Send slim entries array separately to avoid double-serialization OOM
+    const entries = entriesResponse.data.map(e => ({
+      entryTime: e.entryTime,
+      success: e.success,
+      userId: e.user_id,
+      memberName: e.memberName,
+      cardName: e.cardName,
+      door: e.door,
+      doorName: e.doorName,
+      reason: e.reason,
+      sites: e.sites
+    }));
 
     res.json({
       ...analytics,
+      entries,
       club: {
         id: club.Club_Zoezi_ID,
         name: club.Club_name,
