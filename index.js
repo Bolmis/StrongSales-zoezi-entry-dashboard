@@ -181,14 +181,12 @@ async function fetchZoeziEntries(domain, apiKey, fromDate, toDate) {
   // idOnly=True returns: id, user_id, member_id, entryTime, success, door, sites, externaldoorid, reason, cardName
   return {
     data: (entries || []).map(e => ({
-      id: e.id,
       entryTime: e.entryTime,
       success: e.success !== false,
-      user_id: e.user_id || e.member_id,
-      memberName: null, // Not available with idOnly, but we have user_id
+      userId: e.userId || e.member_id,
+      memberName: null, // Not available with idOnly, but we have userId
       door: e.door,
       doorName: `Door ${e.door}`, // Will be enriched later if door names are fetched
-      doorExternalId: e.externaldoorid,
       cardName: e.cardName || 'Unknown',
       reason: e.reason || null,
       sites: e.sites || []
@@ -239,7 +237,7 @@ function processEntryAnalytics(apiResponse) {
   const successRate = totalEntries > 0 ? ((successfulEntries / totalEntries) * 100).toFixed(1) : 0;
 
   // Unique visitors
-  const uniqueVisitorIds = new Set(normalizedEntries.filter(e => e.user_id).map(e => e.user_id));
+  const uniqueVisitorIds = new Set(normalizedEntries.filter(e => e.userId).map(e => e.userId));
   const uniqueVisitors = uniqueVisitorIds.size;
 
   // Get unique dates
@@ -344,7 +342,7 @@ function processEntryAnalytics(apiResponse) {
     }
     dailyCounts[date].total++;
     if (e.success) dailyCounts[date].successful++;
-    if (e.user_id) dailyCounts[date].uniqueVisitors.add(e.user_id);
+    if (e.userId) dailyCounts[date].uniqueVisitors.add(e.userId);
   });
 
   const dailyTrend = Object.values(dailyCounts)
@@ -360,19 +358,19 @@ function processEntryAnalytics(apiResponse) {
   // Top visitors
   const visitorCounts = {};
   normalizedEntries.forEach(e => {
-    if (e.user_id) {
-      if (!visitorCounts[e.user_id]) {
-        visitorCounts[e.user_id] = {
-          id: e.user_id,
-          name: e.memberName || `Member #${e.user_id}`,
+    if (e.userId) {
+      if (!visitorCounts[e.userId]) {
+        visitorCounts[e.userId] = {
+          id: e.userId,
+          name: e.memberName || `Member #${e.userId}`,
           entries: 0,
           lastVisit: null
         };
       }
-      visitorCounts[e.user_id].entries++;
+      visitorCounts[e.userId].entries++;
       const entryDate = new Date(e.entryTime);
-      if (!visitorCounts[e.user_id].lastVisit || entryDate > new Date(visitorCounts[e.user_id].lastVisit)) {
-        visitorCounts[e.user_id].lastVisit = entryDate.yyyymmdd();
+      if (!visitorCounts[e.userId].lastVisit || entryDate > new Date(visitorCounts[e.userId].lastVisit)) {
+        visitorCounts[e.userId].lastVisit = entryDate.yyyymmdd();
       }
     }
   });
@@ -567,22 +565,10 @@ app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
     // Process analytics (without rawEntries to save memory)
     const analytics = processEntryAnalytics(entriesResponse);
 
-    // Send slim entries array separately to avoid double-serialization OOM
-    const entries = entriesResponse.data.map(e => ({
-      entryTime: e.entryTime,
-      success: e.success,
-      userId: e.user_id,
-      memberName: e.memberName,
-      cardName: e.cardName,
-      door: e.door,
-      doorName: e.doorName,
-      reason: e.reason,
-      sites: e.sites
-    }));
-
+    // Reuse normalized array directly — no extra copy
     res.json({
       ...analytics,
-      entries,
+      entries: entriesResponse.data,
       club: {
         id: club.Club_Zoezi_ID,
         name: club.Club_name,
@@ -671,22 +657,10 @@ app.get('/api/embed/analytics', async (req, res) => {
     // Process analytics (without rawEntries to save memory)
     const analytics = processEntryAnalytics(entriesResponse);
 
-    // Send slim entries array separately to avoid double-serialization OOM
-    const entries = entriesResponse.data.map(e => ({
-      entryTime: e.entryTime,
-      success: e.success,
-      userId: e.user_id,
-      memberName: e.memberName,
-      cardName: e.cardName,
-      door: e.door,
-      doorName: e.doorName,
-      reason: e.reason,
-      sites: e.sites
-    }));
-
+    // Reuse normalized array directly — no extra copy
     res.json({
       ...analytics,
-      entries,
+      entries: entriesResponse.data,
       club: {
         id: club.Club_Zoezi_ID,
         name: club.Club_name,
