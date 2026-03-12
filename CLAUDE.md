@@ -114,6 +114,7 @@ Uses the existing `Clubs` table:
 ```
 StrongSales-zoezi-entry-dashboard/
 ├── index.js                    # Express server (main entry point)
+├── migration.sql               # Supabase schema + PG functions
 ├── public/
 │   ├── index.html              # Single-page app frontend
 │   ├── Strongsales logo WHITE.png
@@ -182,24 +183,11 @@ colors: {
 
 ## Analytics Processing
 
-The backend processes raw entry data into:
+Entry data is synced from Zoezi to Supabase day-by-day, with analytics computed via PostgreSQL functions (`get_entry_analytics`, `get_entry_page`). Historical days are marked final and never re-fetched; recent days (today/yesterday) are re-synced if stale (>15 min).
 
-1. **Summary Statistics**
-   - Total, successful, failed entries
-   - Success rate percentage
-   - Unique visitors count
-   - Average entries per day
-   - Peak hour and day
+1. **Summary Statistics** — total, successful, failed, success rate, unique visitors, avg/day, peak hour/day
+2. **Time-based Analysis** — by hour (0-23), by day of week, daily trend
+3. **Segmented Analysis** — by door, by card type, by site, top visitors, failed reasons
+4. **Paginated Entries** — server-side pagination (20/page), CSV export streams from DB
 
-2. **Time-based Analysis**
-   - By hour (5am-11pm)
-   - By day of week
-   - Daily trend
-
-3. **Segmented Analysis**
-   - By door/access point
-   - By card type
-   - Top visitors
-   - Failed entry reasons
-
-Client-side filtering recalculates all metrics in real-time.
+Server-side filtering via SQL (doors, cards, sites, status, unique visits). Frontend sends filter params, triggers debounced server requests.

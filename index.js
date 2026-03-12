@@ -3,6 +3,9 @@
  *
  * A complete entry/visit analytics dashboard for Zoezi gyms.
  * Powered by StrongSales - https://strongsales.se
+ *
+ * Database-backed architecture: entries are synced from Zoezi to Supabase,
+ * analytics are computed via PostgreSQL functions.
  */
 
 'use strict';
@@ -25,12 +28,16 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'strongsales2024';
 const ADMIN_KEY = process.env.ADMIN_KEY || crypto.randomBytes(24).toString('hex');
 const EMBED_SECRET = process.env.EMBED_SECRET || crypto.randomBytes(32).toString('hex');
 
-// Supabase client
+// Supabase client (singleton)
+let _supabase = null;
 function getSupabase() {
   if (!SUPABASE_API_KEY) {
     throw new Error('SUPABASE_API_KEY is required');
   }
-  return createClient(SUPABASE_URL, SUPABASE_API_KEY);
+  if (!_supabase) {
+    _supabase = createClient(SUPABASE_URL, SUPABASE_API_KEY);
+  }
+  return _supabase;
 }
 
 // Middleware
@@ -154,13 +161,200 @@ async function zoeziFetch(domain, apiKey, endpoint, maxRetries = 3) {
   }
 }
 
-// Fetch entries using idOnly=True (FAST - returns essential data without heavy Member object)
-// Returns raw Zoezi array directly — no normalization copy to save memory.
-// Raw fields: id, user_id, member_id, entryTime, success, door, sites, externaldoorid, reason, cardName
-async function fetchZoeziEntries(domain, apiKey, fromDate, toDate) {
-  const url = `https://${domain}/api/entry/get?fromDate=${fromDate}&toDate=${toDate}&idOnly=True`;
+// ========== SYNC SYSTEM ==========
 
-  console.log(`[entry/get idOnly] Fetching entries from ${domain} (${fromDate} to ${toDate})`);
+// Generate array of date strings between from and to (inclusive)
+function getDateRange(fromDate, toDate) {
+  const dates = [];
+  const current = new Date(fromDate + 'T00:00:00');
+  const end = new Date(toDate + 'T00:00:00');
+  while (current <= end) {
+    dates.push(current.toISOString().split('T')[0]);
+    current.setDate(current.getDate() + 1);
+  }
+  return dates;
+}
+
+// Determine if a date in Stockholm is CET (+01) or CEST (+02)
+// EU DST: last Sunday of March → last Sunday of October
+function getStockholmOffset(year, month, day) {
+  // Last Sunday of March
+  const marchLast = new Date(year, 2, 31);
+  marchLast.setDate(31 - marchLast.getDay());
+  // Last Sunday of October
+  const octLast = new Date(year, 9, 31);
+  octLast.setDate(31 - octLast.getDay());
+
+  const d = new Date(year, month - 1, day);
+  return (d >= marchLast && d < octLast) ? '+02:00' : '+01:00';
+}
+
+// Get today and yesterday as YYYY-MM-DD in Stockholm timezone
+function getStockholmDates() {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Stockholm' });
+  const todayStr = fmt.format(now);
+  const yesterday = new Date(now.getTime() - 86400000);
+  const yesterdayStr = fmt.format(yesterday);
+  return { todayStr, yesterdayStr };
+}
+
+// Parse Zoezi local time string "YYYY-MM-DD HH:MM:SS" into components
+function parseZoeziEntryTime(entryTimeStr) {
+  // Zoezi returns local time (Europe/Stockholm), not UTC
+  const parts = entryTimeStr.split(' ');
+  const datePart = parts[0]; // "YYYY-MM-DD"
+  const timePart = parts[1] || '00:00:00'; // "HH:MM:SS"
+
+  const [year, month, day] = datePart.split('-').map(Number);
+  const [hour] = timePart.split(':').map(Number);
+
+  // Compute day of week from the date
+  const d = new Date(year, month - 1, day);
+  const dow = d.getDay(); // 0=Sunday, 6=Saturday
+
+  // Compute correct UTC offset for this date (CET +01 or CEST +02)
+  const offset = getStockholmOffset(year, month, day);
+
+  return {
+    entry_date: datePart,
+    entry_hour: hour,
+    entry_dow: dow,
+    entry_time_tz: `${datePart} ${timePart}${offset}` // timestamptz-safe string
+  };
+}
+
+// Sync entries from Zoezi to Supabase for missing/stale days
+async function ensureSync(supabase, club, fromDate, toDate) {
+  const clubId = club.Club_Zoezi_ID;
+  const domain = club.Zoezi_Domain;
+  const apiKey = club.Zoezi_Api_Key;
+
+  const allDates = getDateRange(fromDate, toDate);
+  if (allDates.length === 0) return;
+
+  // 1. Check which dates are already synced
+  const { data: syncedDays, error: syncErr } = await supabase
+    .from('entry_sync_days')
+    .select('sync_date, is_final, last_synced_at')
+    .eq('club_id', clubId)
+    .gte('sync_date', fromDate)
+    .lte('sync_date', toDate);
+
+  if (syncErr) {
+    console.error('Error checking sync days:', syncErr);
+    throw syncErr;
+  }
+
+  const syncMap = {};
+  (syncedDays || []).forEach(s => {
+    syncMap[s.sync_date] = s;
+  });
+
+  // 2. Determine which dates need syncing (using Stockholm local time)
+  const now = new Date();
+  const { todayStr, yesterdayStr } = getStockholmDates();
+
+  const datesToSync = [];
+  for (const dateStr of allDates) {
+    const existing = syncMap[dateStr];
+    if (!existing) {
+      // Never synced
+      datesToSync.push(dateStr);
+    } else if (!existing.is_final && (dateStr === todayStr || dateStr === yesterdayStr)) {
+      // Recent day, check staleness (>15 min)
+      const lastSynced = new Date(existing.last_synced_at);
+      const ageMs = now - lastSynced;
+      if (ageMs > 15 * 60 * 1000) {
+        datesToSync.push(dateStr);
+      }
+    }
+    // If is_final=true, skip (fully synced historical day)
+  }
+
+  if (datesToSync.length === 0) {
+    // Also check if doors/sites need refresh
+    await refreshMetadataIfNeeded(supabase, club);
+    return;
+  }
+
+  console.log(`[sync] Club ${clubId}: syncing ${datesToSync.length} day(s) out of ${allDates.length}`);
+
+  // 3. Fetch and insert day-by-day
+  for (const dateStr of datesToSync) {
+    try {
+      const entries = await fetchZoeziEntriesForDay(domain, apiKey, dateStr);
+
+      // Upsert entries in batches (safe: no delete, just upsert on conflict)
+      let insertOk = true;
+      if (entries.length > 0) {
+        const rows = entries.map(e => {
+          const parsed = parseZoeziEntryTime(e.entryTime);
+          return {
+            club_id: clubId,
+            zoezi_entry_id: e.id,
+            entry_time: parsed.entry_time_tz,
+            entry_date: parsed.entry_date,
+            entry_hour: parsed.entry_hour,
+            entry_dow: parsed.entry_dow,
+            success: e.success !== false,
+            user_id: e.user_id || null,
+            member_id: e.member_id || null,
+            door_id: e.door != null ? String(e.door) : null,
+            reason: e.reason || null,
+            card_name: e.cardName || null,
+            site_ids: (e.sites || []).map(Number).filter(n => !isNaN(n))
+          };
+        });
+
+        for (let i = 0; i < rows.length; i += 1000) {
+          const batch = rows.slice(i, i + 1000);
+          const { error: insertErr } = await supabase
+            .from('entry_events')
+            .upsert(batch, { onConflict: 'club_id,zoezi_entry_id' });
+
+          if (insertErr) {
+            console.error(`[sync] Insert error for ${clubId}/${dateStr} batch ${i}:`, insertErr);
+            insertOk = false;
+          }
+        }
+      }
+
+      // Only mark as synced if inserts succeeded
+      if (insertOk) {
+        const isFinal = dateStr < yesterdayStr; // Days before yesterday are final
+        const { error: syncUpsertErr } = await supabase
+          .from('entry_sync_days')
+          .upsert({
+            club_id: clubId,
+            sync_date: dateStr,
+            is_final: isFinal,
+            entry_count: entries.length,
+            last_synced_at: new Date().toISOString()
+          }, { onConflict: 'club_id,sync_date' });
+
+        if (syncUpsertErr) {
+          console.error(`[sync] Sync tracking error for ${clubId}/${dateStr}:`, syncUpsertErr);
+        }
+        console.log(`[sync] ${clubId}/${dateStr}: ${entries.length} entries (final=${isFinal})`);
+      } else {
+        console.error(`[sync] ${clubId}/${dateStr}: insert failed, NOT marking as synced`);
+      }
+    } catch (err) {
+      console.error(`[sync] Failed to sync ${clubId}/${dateStr}:`, err.message);
+      // Continue with other dates
+    }
+  }
+
+  // 4. Refresh metadata if needed
+  await refreshMetadataIfNeeded(supabase, club);
+}
+
+// Fetch entries for a single day from Zoezi
+async function fetchZoeziEntriesForDay(domain, apiKey, dateStr) {
+  const url = `https://${domain}/api/entry/get?fromDate=${dateStr}&toDate=${dateStr}&idOnly=True`;
+
+  console.log(`[entry/get] Fetching ${domain} for ${dateStr}`);
   const startTime = Date.now();
 
   const response = await fetch(url, {
@@ -177,211 +371,157 @@ async function fetchZoeziEntries(domain, apiKey, fromDate, toDate) {
 
   const entries = await response.json();
   const duration = Date.now() - startTime;
-  console.log(`[entry/get idOnly] Fetched ${entries?.length || 0} entries in ${duration}ms`);
+  console.log(`[entry/get] ${domain}/${dateStr}: ${entries?.length || 0} entries in ${duration}ms`);
 
   return entries || [];
 }
 
-// Max entries to include in the response for client-side filtering.
-// Above this, only aggregated analytics are sent to avoid OOM.
-const ENTRIES_RESPONSE_LIMIT = 100000;
+// Refresh door and site metadata if stale (>6 hours)
+async function refreshMetadataIfNeeded(supabase, club) {
+  const clubId = club.Club_Zoezi_ID;
+  const domain = club.Zoezi_Domain;
+  const apiKey = club.Zoezi_Api_Key;
 
-// Process raw Zoezi entry data into analytics in a single pass.
-// Works directly with raw Zoezi field names to avoid creating a normalized copy.
-// doorMap is optional — maps door IDs to names from the resource API.
-function processEntryAnalytics(rawEntries, doorMap) {
-  if (!rawEntries || rawEntries.length === 0) {
-    return {
-      summary: {
-        totalEntries: 0, successfulEntries: 0, failedEntries: 0,
-        successRate: 0, uniqueVisitors: 0, avgEntriesPerDay: 0,
-        peakHour: null, peakDay: null
-      },
-      byHour: [], byDay: [], byDoor: [], byCardType: [],
-      dailyTrend: [], topVisitors: [], failedReasons: [],
-      entryCount: 0
-    };
-  }
+  // Check last update time for doors
+  const { data: lastDoor } = await supabase
+    .from('club_doors')
+    .select('updated_at')
+    .eq('club_id', clubId)
+    .order('updated_at', { ascending: false })
+    .limit(1);
 
-  doorMap = doorMap || {};
+  const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+  const doorsStale = !lastDoor || lastDoor.length === 0 || new Date(lastDoor[0].updated_at) < sixHoursAgo;
 
-  // Single-pass aggregation
-  const hourCounts = {};
-  for (let h = 0; h <= 23; h++) hourCounts[h] = { total: 0, successful: 0 };
+  if (doorsStale) {
+    try {
+      const [resources, sitesData] = await Promise.all([
+        zoeziFetch(domain, apiKey, '/api/resource/get').catch(() => null),
+        zoeziFetch(domain, apiKey, '/api/site/get/all').catch(() => null)
+      ]);
 
-  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const dayCounts = {};
-  dayNames.forEach((name, idx) => { dayCounts[idx] = { name, total: 0, successful: 0 }; });
-
-  const doorCounts = {};
-  const cardCounts = {};
-  const dailyCounts = {};
-  const visitorCounts = {};
-  const reasonCounts = {};
-  const uniqueVisitorIds = new Set();
-  const uniqueDates = new Set();
-  let successfulEntries = 0;
-
-  for (let i = 0; i < rawEntries.length; i++) {
-    const e = rawEntries[i];
-    const success = e.success !== false;
-    const userId = e.user_id || e.member_id;
-    const d = new Date(e.entryTime);
-    const hour = d.getHours();
-    const day = d.getDay();
-    const dateStr = d.yyyymmdd();
-    const doorId = e.door || 'unknown';
-    const cardName = e.cardName || 'Unknown';
-
-    if (success) successfulEntries++;
-
-    // Hour
-    hourCounts[hour].total++;
-    if (success) hourCounts[hour].successful++;
-
-    // Day of week
-    dayCounts[day].total++;
-    if (success) dayCounts[day].successful++;
-
-    // Door
-    if (!doorCounts[doorId]) {
-      doorCounts[doorId] = { id: doorId, name: doorMap[doorId] || `Door ${doorId}`, total: 0, successful: 0 };
-    }
-    doorCounts[doorId].total++;
-    if (success) doorCounts[doorId].successful++;
-
-    // Card type
-    if (!cardCounts[cardName]) {
-      cardCounts[cardName] = { name: cardName, total: 0, successful: 0 };
-    }
-    cardCounts[cardName].total++;
-    if (success) cardCounts[cardName].successful++;
-
-    // Daily trend
-    if (!dailyCounts[dateStr]) {
-      dailyCounts[dateStr] = { date: dateStr, total: 0, successful: 0, uniqueVisitors: new Set() };
-    }
-    dailyCounts[dateStr].total++;
-    if (success) dailyCounts[dateStr].successful++;
-    if (userId) dailyCounts[dateStr].uniqueVisitors.add(userId);
-
-    // Visitors
-    if (userId) {
-      uniqueVisitorIds.add(userId);
-      if (!visitorCounts[userId]) {
-        visitorCounts[userId] = { id: userId, name: `Member #${userId}`, entries: 0, lastVisit: null };
+      if (resources && resources.length > 0) {
+        const doorRows = resources.map(r => ({
+          club_id: clubId,
+          door_id: String(r.id),
+          door_name: r.name,
+          updated_at: new Date().toISOString()
+        }));
+        await supabase
+          .from('club_doors')
+          .upsert(doorRows, { onConflict: 'club_id,door_id' });
       }
-      visitorCounts[userId].entries++;
-      if (!visitorCounts[userId].lastVisit || dateStr > visitorCounts[userId].lastVisit) {
-        visitorCounts[userId].lastVisit = dateStr;
+
+      if (sitesData && sitesData.length > 0) {
+        const siteRows = sitesData.map(s => ({
+          club_id: clubId,
+          site_id: s.id,
+          site_name: s.name,
+          updated_at: new Date().toISOString()
+        }));
+        await supabase
+          .from('club_sites')
+          .upsert(siteRows, { onConflict: 'club_id,site_id' });
       }
-    }
 
-    // Failed reasons
-    if (!success && e.reason) {
-      if (!reasonCounts[e.reason]) reasonCounts[e.reason] = { reason: e.reason, count: 0 };
-      reasonCounts[e.reason].count++;
+      console.log(`[meta] Refreshed doors/sites for ${clubId}`);
+    } catch (e) {
+      console.log(`[meta] Could not refresh metadata for ${clubId}:`, e.message);
     }
-
-    uniqueDates.add(dateStr);
   }
-
-  const totalEntries = rawEntries.length;
-  const failedEntries = totalEntries - successfulEntries;
-  const successRate = totalEntries > 0 ? ((successfulEntries / totalEntries) * 100).toFixed(1) : 0;
-  const avgEntriesPerDay = uniqueDates.size > 0 ? (totalEntries / uniqueDates.size).toFixed(1) : 0;
-
-  const byHour = Object.entries(hourCounts).map(([hour, data]) => ({
-    hour: parseInt(hour),
-    label: `${hour.toString().padStart(2, '0')}:00`,
-    total: data.total,
-    successful: data.successful,
-    successRate: data.total > 0 ? ((data.successful / data.total) * 100).toFixed(1) : 0
-  }));
-
-  const peakHourData = byHour.reduce((max, h) => h.total > max.total ? h : max, { total: 0 });
-  const peakHour = peakHourData.total > 0 ? peakHourData.label : null;
-
-  const byDay = Object.entries(dayCounts).map(([dayIdx, data]) => ({
-    day: data.name, dayIndex: parseInt(dayIdx), total: data.total, successful: data.successful,
-    successRate: data.total > 0 ? ((data.successful / data.total) * 100).toFixed(1) : 0
-  }));
-
-  const peakDayData = byDay.reduce((max, d) => d.total > max.total ? d : max, { total: 0 });
-  const peakDay = peakDayData.total > 0 ? peakDayData.day : null;
-
-  const byDoor = Object.values(doorCounts)
-    .map(d => ({ ...d, successRate: d.total > 0 ? ((d.successful / d.total) * 100).toFixed(1) : 0 }))
-    .sort((a, b) => b.total - a.total);
-
-  const byCardType = Object.values(cardCounts)
-    .map(c => ({ ...c, successRate: c.total > 0 ? ((c.successful / c.total) * 100).toFixed(1) : 0 }))
-    .sort((a, b) => b.total - a.total);
-
-  const dailyTrend = Object.values(dailyCounts)
-    .map(d => ({
-      date: d.date, total: d.total, successful: d.successful,
-      uniqueVisitors: d.uniqueVisitors.size,
-      successRate: d.total > 0 ? ((d.successful / d.total) * 100).toFixed(1) : 0
-    }))
-    .sort((a, b) => a.date.localeCompare(b.date));
-
-  const topVisitors = Object.values(visitorCounts)
-    .sort((a, b) => b.entries - a.entries)
-    .slice(0, 20);
-
-  const failedReasons = Object.values(reasonCounts)
-    .sort((a, b) => b.count - a.count);
-
-  return {
-    summary: {
-      totalEntries, successfulEntries, failedEntries,
-      successRate: parseFloat(successRate), uniqueVisitors: uniqueVisitorIds.size,
-      avgEntriesPerDay: parseFloat(avgEntriesPerDay), peakHour, peakDay
-    },
-    byHour, byDay, byDoor, byCardType, dailyTrend, topVisitors, failedReasons,
-    entryCount: totalEntries
-  };
 }
 
-// Stream a JSON response, optionally including raw entries for client-side filtering.
-// When entries are included, serializes each individually to avoid building a huge JSON string.
-// When entries is null (large dataset), sends only aggregated analytics.
-function streamAnalyticsResponse(res, analytics, rawEntries, doorMap, club, sites, dateRange) {
-  res.setHeader('Content-Type', 'application/json');
+// Parse filter params from query string
+function parseFilterParams(query) {
+  const params = {
+    fromDate: query.fromDate,
+    toDate: query.toDate,
+    doors: query.doors === '_none' ? ['__impossible__'] : (query.doors ? query.doors.split(',').filter(Boolean) : null),
+    cards: query.cards === '_none' ? ['__impossible__'] : (query.cards ? query.cards.split(',').filter(Boolean) : null),
+    sites: query.sites === '_none' ? [-1] : (query.sites ? query.sites.split(',').map(Number).filter(n => !isNaN(n)) : null),
+    status: query.status || 'all',
+    uniqueVisits: query.uniqueVisits === 'true',
+    page: parseInt(query.page) || 1,
+    limit: Math.min(parseInt(query.limit) || 20, 100)
+  };
 
-  const includeEntries = rawEntries && rawEntries.length <= ENTRIES_RESPONSE_LIMIT;
-  const envelope = { ...analytics, entriesIncluded: includeEntries, club, sites, dateRange };
-  const json = JSON.stringify(envelope);
+  // Convert empty arrays to null (meaning "no filter")
+  if (params.doors && params.doors.length === 0) params.doors = null;
+  if (params.cards && params.cards.length === 0) params.cards = null;
+  if (params.sites && params.sites.length === 0) params.sites = null;
 
-  if (!includeEntries) {
-    res.end(json);
-    return;
+  return params;
+}
+
+// Core analytics handler (shared between authenticated and embed routes)
+async function handleAnalytics(club, filters, supabase) {
+  const clubId = club.Club_Zoezi_ID;
+
+  // 1. Ensure data is synced
+  await ensureSync(supabase, club, filters.fromDate, filters.toDate);
+
+  // 2. Call analytics RPC
+  const { data: analyticsData, error: analyticsErr } = await supabase.rpc('get_entry_analytics', {
+    p_club_id: clubId,
+    p_from_date: filters.fromDate,
+    p_to_date: filters.toDate,
+    p_doors: filters.doors,
+    p_cards: filters.cards,
+    p_sites: filters.sites,
+    p_status: filters.status,
+    p_unique_visits: filters.uniqueVisits
+  });
+
+  if (analyticsErr) {
+    console.error('Analytics RPC error:', analyticsErr);
+    throw new Error('Failed to compute analytics: ' + analyticsErr.message);
   }
 
-  // Stream entries one-by-one to avoid building a huge JSON string
-  res.write(json.slice(0, -1)); // everything except final "}"
-  res.write(',"entries":[');
+  // 3. Call paginated entries RPC
+  const { data: pageData, error: pageErr } = await supabase.rpc('get_entry_page', {
+    p_club_id: clubId,
+    p_from_date: filters.fromDate,
+    p_to_date: filters.toDate,
+    p_doors: filters.doors,
+    p_cards: filters.cards,
+    p_sites: filters.sites,
+    p_status: filters.status,
+    p_page: filters.page,
+    p_limit: filters.limit
+  });
 
-  for (let i = 0; i < rawEntries.length; i++) {
-    const e = rawEntries[i];
-    if (i > 0) res.write(',');
-    // Normalize field names for the frontend on-the-fly (no extra array copy)
-    res.write(JSON.stringify({
-      entryTime: e.entryTime,
-      success: e.success !== false,
-      userId: e.user_id || e.member_id,
-      memberName: null,
-      cardName: e.cardName || 'Unknown',
-      door: e.door,
-      doorName: doorMap[e.door] || `Door ${e.door}`,
-      reason: e.reason || null,
-      sites: e.sites || []
-    }));
+  if (pageErr) {
+    console.error('Page RPC error:', pageErr);
+    throw new Error('Failed to fetch entries page: ' + pageErr.message);
   }
 
-  res.write(']}');
-  res.end();
+  // 4. Fetch sites from cache
+  const { data: sites } = await supabase
+    .from('club_sites')
+    .select('site_id, site_name')
+    .eq('club_id', clubId);
+
+  const siteList = (sites || []).map(s => ({ id: s.site_id, name: s.site_name }));
+
+  // 5. Build response
+  const response = {
+    ...analyticsData,
+    entries: pageData.entries,
+    entriesIncluded: true,
+    entriesPage: pageData,
+    sites: siteList,
+    club: {
+      id: club.Club_Zoezi_ID,
+      name: club.Club_name,
+      domain: club.Zoezi_Domain
+    },
+    dateRange: {
+      fromDate: filters.fromDate,
+      toDate: filters.toDate
+    }
+  };
+
+  return response;
 }
 
 // ========== ROUTES ==========
@@ -485,9 +625,9 @@ app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
   req.setTimeout(120000);
   try {
     const { clubId } = req.params;
-    const { fromDate, toDate } = req.query;
+    const filters = parseFilterParams(req.query);
 
-    if (!fromDate || !toDate) {
+    if (!filters.fromDate || !filters.toDate) {
       return res.status(400).json({ error: 'fromDate and toDate are required' });
     }
 
@@ -502,39 +642,95 @@ app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
       return res.status(404).json({ error: 'Club not found' });
     }
 
-    const domain = club.Zoezi_Domain;
-    const apiKey = club.Zoezi_Api_Key;
-
-    // Fetch entries and door/site metadata in parallel
-    const rawEntries = await fetchZoeziEntries(domain, apiKey, fromDate, toDate);
-
-    let doorMap = {};
-    let sites = [];
-    try {
-      const [resources, sitesData] = await Promise.all([
-        zoeziFetch(domain, apiKey, '/api/resource/get').catch(() => null),
-        zoeziFetch(domain, apiKey, '/api/site/get/all').catch(() => null)
-      ]);
-      if (resources && resources.length > 0) {
-        resources.forEach(r => { doorMap[r.id] = r.name; });
-      }
-      if (sitesData && sitesData.length > 0) {
-        sites = sitesData.map(s => ({ id: s.id, name: s.name }));
-      }
-    } catch (e) {
-      console.log('Could not fetch door names or sites:', e.message);
-    }
-
-    // Process analytics directly from raw Zoezi data (no normalization copy)
-    const analytics = processEntryAnalytics(rawEntries, doorMap);
-
-    // Stream response — entries only included if under 100k (otherwise OOM)
-    streamAnalyticsResponse(res, analytics, rawEntries, doorMap,
-      { id: club.Club_Zoezi_ID, name: club.Club_name, domain: club.Zoezi_Domain },
-      sites, { fromDate, toDate });
+    const response = await handleAnalytics(club, filters, supabase);
+    res.json(response);
   } catch (error) {
     console.error('Error fetching analytics:', error);
     res.status(500).json({ error: 'Failed to fetch analytics', message: error.message });
+  }
+});
+
+// CSV export for a club
+app.get('/api/analytics/:clubId/export.csv', isAuthenticated, async (req, res) => {
+  req.setTimeout(120000);
+  try {
+    const { clubId } = req.params;
+    const filters = parseFilterParams(req.query);
+
+    if (!filters.fromDate || !filters.toDate) {
+      return res.status(400).json({ error: 'fromDate and toDate are required' });
+    }
+
+    const supabase = getSupabase();
+    const { data: club, error: clubError } = await supabase
+      .from('Clubs')
+      .select('*')
+      .eq('Club_Zoezi_ID', clubId)
+      .single();
+
+    if (clubError || !club) {
+      return res.status(404).json({ error: 'Club not found' });
+    }
+
+    // Ensure data is synced
+    await ensureSync(supabase, club, filters.fromDate, filters.toDate);
+
+    // Stream CSV from DB - fetch all matching entries (no pagination)
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="entry-analytics-${club.Club_name}-${filters.fromDate}-${filters.toDate}.csv"`);
+
+    // Write CSV header
+    res.write('Time,User ID,Member,Door,Card Type,Status,Reason\n');
+
+    // Fetch entries in pages to avoid OOM
+    let page = 1;
+    const pageSize = 5000;
+    let hasMore = true;
+
+    while (hasMore) {
+      const { data: pageData, error: pageErr } = await supabase.rpc('get_entry_page', {
+        p_club_id: clubId,
+        p_from_date: filters.fromDate,
+        p_to_date: filters.toDate,
+        p_doors: filters.doors,
+        p_cards: filters.cards,
+        p_sites: filters.sites,
+        p_status: filters.status,
+        p_page: page,
+        p_limit: pageSize
+      });
+
+      if (pageErr) {
+        console.error('CSV export page error:', pageErr);
+        break;
+      }
+
+      const entries = pageData.entries || [];
+      for (const e of entries) {
+        const row = [
+          e.entryTime || '',
+          e.userId || '',
+          e.memberName || '',
+          e.doorName || '',
+          e.cardName || '',
+          e.success ? 'Success' : 'Failed',
+          e.reason || ''
+        ].map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',');
+        res.write(row + '\n');
+      }
+
+      hasMore = page < pageData.totalPages;
+      page++;
+    }
+
+    res.end();
+  } catch (error) {
+    console.error('CSV export error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to export CSV', message: error.message });
+    } else {
+      res.end();
+    }
   }
 });
 
@@ -552,7 +748,7 @@ app.get('/api/verify-token', (req, res) => {
 app.get('/api/embed/analytics', async (req, res) => {
   req.setTimeout(120000);
   try {
-    const { token, fromDate, toDate } = req.query;
+    const { token } = req.query;
 
     if (!token) {
       return res.status(401).json({ error: 'Token required' });
@@ -563,7 +759,9 @@ app.get('/api/embed/analytics', async (req, res) => {
       return res.status(401).json({ error: verification.error });
     }
 
-    if (!fromDate || !toDate) {
+    const filters = parseFilterParams(req.query);
+
+    if (!filters.fromDate || !filters.toDate) {
       return res.status(400).json({ error: 'fromDate and toDate are required' });
     }
 
@@ -580,39 +778,100 @@ app.get('/api/embed/analytics', async (req, res) => {
       return res.status(404).json({ error: 'Club not found' });
     }
 
-    const domain = club.Zoezi_Domain;
-    const apiKey = club.Zoezi_Api_Key;
-
-    // Fetch entries and door/site metadata in parallel
-    const rawEntries = await fetchZoeziEntries(domain, apiKey, fromDate, toDate);
-
-    let doorMap = {};
-    let sites = [];
-    try {
-      const [resources, sitesData] = await Promise.all([
-        zoeziFetch(domain, apiKey, '/api/resource/get').catch(() => null),
-        zoeziFetch(domain, apiKey, '/api/site/get/all').catch(() => null)
-      ]);
-      if (resources && resources.length > 0) {
-        resources.forEach(r => { doorMap[r.id] = r.name; });
-      }
-      if (sitesData && sitesData.length > 0) {
-        sites = sitesData.map(s => ({ id: s.id, name: s.name }));
-      }
-    } catch (e) {
-      console.log('Could not fetch door names or sites:', e.message);
-    }
-
-    // Process analytics directly from raw Zoezi data (no normalization copy)
-    const analytics = processEntryAnalytics(rawEntries, doorMap);
-
-    // Stream response — entries only included if under 100k (otherwise OOM)
-    streamAnalyticsResponse(res, analytics, rawEntries, doorMap,
-      { id: club.Club_Zoezi_ID, name: club.Club_name, domain: club.Zoezi_Domain },
-      sites, { fromDate, toDate });
+    const response = await handleAnalytics(club, filters, supabase);
+    res.json(response);
   } catch (error) {
     console.error('Embed analytics error:', error);
     res.status(500).json({ error: 'Failed to fetch analytics', message: error.message });
+  }
+});
+
+// Embed CSV export (token-authenticated)
+app.get('/api/embed/export.csv', async (req, res) => {
+  req.setTimeout(120000);
+  try {
+    const { token } = req.query;
+
+    if (!token) {
+      return res.status(401).json({ error: 'Token required' });
+    }
+
+    const verification = verifyEmbedToken(token);
+    if (!verification.valid) {
+      return res.status(401).json({ error: verification.error });
+    }
+
+    const filters = parseFilterParams(req.query);
+
+    if (!filters.fromDate || !filters.toDate) {
+      return res.status(400).json({ error: 'fromDate and toDate are required' });
+    }
+
+    const clubId = verification.clubId;
+
+    const supabase = getSupabase();
+    const { data: club, error: clubError } = await supabase
+      .from('Clubs')
+      .select('*')
+      .eq('Club_Zoezi_ID', clubId)
+      .single();
+
+    if (clubError || !club) {
+      return res.status(404).json({ error: 'Club not found' });
+    }
+
+    await ensureSync(supabase, club, filters.fromDate, filters.toDate);
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="entry-analytics-${club.Club_name}-${filters.fromDate}-${filters.toDate}.csv"`);
+
+    res.write('Time,User ID,Member,Door,Card Type,Status,Reason\n');
+
+    let page = 1;
+    const pageSize = 5000;
+    let hasMore = true;
+
+    while (hasMore) {
+      const { data: pageData, error: pageErr } = await supabase.rpc('get_entry_page', {
+        p_club_id: clubId,
+        p_from_date: filters.fromDate,
+        p_to_date: filters.toDate,
+        p_doors: filters.doors,
+        p_cards: filters.cards,
+        p_sites: filters.sites,
+        p_status: filters.status,
+        p_page: page,
+        p_limit: pageSize
+      });
+
+      if (pageErr) break;
+
+      const entries = pageData.entries || [];
+      for (const e of entries) {
+        const row = [
+          e.entryTime || '',
+          e.userId || '',
+          e.memberName || '',
+          e.doorName || '',
+          e.cardName || '',
+          e.success ? 'Success' : 'Failed',
+          e.reason || ''
+        ].map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',');
+        res.write(row + '\n');
+      }
+
+      hasMore = page < pageData.totalPages;
+      page++;
+    }
+
+    res.end();
+  } catch (error) {
+    console.error('Embed CSV export error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to export CSV', message: error.message });
+    } else {
+      res.end();
+    }
   }
 });
 
@@ -708,6 +967,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 ║   ─────────────────────────────────────                       ║
 ║   Server running on port ${PORT}                                 ║
 ║   http://localhost:${PORT}                                       ║
+║   Database-backed architecture (Supabase)                     ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
   `);

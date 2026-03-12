@@ -56,6 +56,15 @@
       height: 40px;
       animation: spin 1s linear infinite;
     }
+    .loading-spinner-sm {
+      border: 2px solid rgba(175, 172, 251, 0.2);
+      border-top: 2px solid #AFACFB;
+      border-radius: 50%;
+      width: 16px;
+      height: 16px;
+      animation: spin 1s linear infinite;
+      display: inline-block;
+    }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
     .multiselect-dropdown { position: relative; }
@@ -70,6 +79,13 @@
     .status-badge { display: inline-flex; align-items: center; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
     .status-success { background: #dcfce7; color: #166534; }
     .status-failed { background: #fee2e2; color: #991b1b; }
+
+    /* Filter loading overlay */
+    .filter-loading-overlay {
+      position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(255,255,255,0.6); display: flex; align-items: center;
+      justify-content: center; z-index: 10; border-radius: 1rem;
+    }
 
     /* Custom scrollbar */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -208,6 +224,12 @@
           </div>
 
           <div class="flex flex-wrap items-center gap-3">
+            <!-- Filter loading indicator -->
+            <div id="filter-loading" class="hidden items-center gap-2 text-sm text-gray-500">
+              <div class="loading-spinner-sm"></div>
+              <span>Updating...</span>
+            </div>
+
             <!-- Site Filter (hidden if only 1 site) -->
             <div id="site-filter-container" class="multiselect-dropdown dropdown-left hidden">
               <button onclick="toggleSiteFilter()" class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 hover:border-strongsales-300 transition-all">
@@ -291,7 +313,7 @@
             </div>
 
             <!-- Status Filter -->
-            <select id="status-filter" onchange="applyFilters()" class="px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 focus:ring-2 focus:ring-strongsales-300 focus:border-transparent outline-none transition-all cursor-pointer">
+            <select id="status-filter" onchange="onFilterChange()" class="px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 focus:ring-2 focus:ring-strongsales-300 focus:border-transparent outline-none transition-all cursor-pointer">
               <option value="all">All Entries</option>
               <option value="success">Successful Only</option>
               <option value="failed">Failed Only</option>
@@ -299,7 +321,7 @@
 
             <!-- Unique Visits Toggle -->
             <label class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl cursor-pointer hover:border-strongsales-300 transition-all">
-              <input type="checkbox" id="unique-visits-toggle" onchange="toggleUniqueVisits()"
+              <input type="checkbox" id="unique-visits-toggle" onchange="onFilterChange()"
                 class="w-4 h-4 rounded border-gray-300 text-strongsales-600 focus:ring-strongsales-300">
               <span class="text-sm font-medium text-gray-700">Unique Visits</span>
               <span class="text-xs text-gray-400" title="Count only one entry per person per day">(1/day)</span>
@@ -313,16 +335,6 @@
               Export CSV
             </button>
           </div>
-        </div>
-
-        <!-- Large dataset banner -->
-        <div id="large-dataset-banner" class="hidden mb-6 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-center gap-3">
-          <svg class="w-5 h-5 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-          </svg>
-          <p class="text-sm text-amber-800">
-            <strong>Large dataset</strong> — Showing server-computed analytics only. Filters, entry table, and CSV export are disabled for datasets over 100,000 entries. Reduce the date range for full functionality.
-          </p>
         </div>
 
         <!-- Summary Cards -->
@@ -515,7 +527,6 @@
 
   <script>
     // ===== STATE =====
-    let rawAnalytics = null;
     let analytics = null;
     let charts = {};
     let selectedDoors = new Set();
@@ -526,10 +537,12 @@
     let allCards = [];
     let currentPage = 1;
     const entriesPerPage = 20;
-    let uniqueVisitsOnly = false;
     let comparisonMode = false;
-    let compareRawAnalytics = null;
     let compareAnalytics = null;
+
+    // Track whether this is the initial load (to prevent filter init from triggering a request)
+    let isInitialLoad = true;
+    let filterDebounceTimer = null;
 
     const config = {
       isIframeMode: window.parent !== window,
@@ -610,6 +623,56 @@
       }
     }
 
+    // Build the filter query string from current UI state
+    function buildFilterParams() {
+      const params = new URLSearchParams();
+      params.set('fromDate', document.getElementById('from-date').value);
+      params.set('toDate', document.getElementById('to-date').value);
+
+      // Send filter params: if none selected, send '_none' to get empty results
+      // If all selected, don't send param (server returns all)
+      if (allDoors.length > 0 && selectedDoors.size === 0) {
+        params.set('doors', '_none');
+      } else if (allDoors.length > 0 && selectedDoors.size < allDoors.length) {
+        params.set('doors', Array.from(selectedDoors).join(','));
+      }
+      if (allCards.length > 0 && selectedCards.size === 0) {
+        params.set('cards', '_none');
+      } else if (allCards.length > 0 && selectedCards.size < allCards.length) {
+        params.set('cards', Array.from(selectedCards).join(','));
+      }
+      if (allSites.length > 1 && selectedSites.size === 0) {
+        params.set('sites', '_none');
+      } else if (allSites.length > 1 && selectedSites.size < allSites.length) {
+        params.set('sites', Array.from(selectedSites).join(','));
+      }
+
+      const status = document.getElementById('status-filter').value;
+      if (status !== 'all') {
+        params.set('status', status);
+      }
+
+      const uniqueVisits = document.getElementById('unique-visits-toggle').checked;
+      if (uniqueVisits) {
+        params.set('uniqueVisits', 'true');
+      }
+
+      params.set('page', currentPage.toString());
+      params.set('limit', entriesPerPage.toString());
+
+      return params.toString();
+    }
+
+    // Build URL for analytics endpoint
+    function buildAnalyticsUrl(filterStr) {
+      const clubId = config.presetClubId || document.getElementById('gym-select').value;
+      if (config.isSecureEmbed && config.embedToken) {
+        return `/api/embed/analytics?token=${encodeURIComponent(config.embedToken)}&${filterStr}`;
+      } else {
+        return `/api/analytics/${clubId}?${filterStr}`;
+      }
+    }
+
     async function loadAnalytics() {
       const clubId = config.presetClubId || document.getElementById('gym-select').value;
       const fromDate = document.getElementById('from-date').value;
@@ -626,14 +689,12 @@
       }
 
       showState('loading');
+      isInitialLoad = true;
+      currentPage = 1;
 
       try {
-        let url;
-        if (config.isSecureEmbed && config.embedToken) {
-          url = `/api/embed/analytics?token=${encodeURIComponent(config.embedToken)}&fromDate=${fromDate}&toDate=${toDate}`;
-        } else {
-          url = `/api/analytics/${clubId}?fromDate=${fromDate}&toDate=${toDate}`;
-        }
+        const filterStr = buildFilterParams();
+        const url = buildAnalyticsUrl(filterStr);
 
         // Build comparison URL if needed
         let compareUrl = null;
@@ -645,11 +706,11 @@
             showState('welcome');
             return;
           }
-          if (config.isSecureEmbed && config.embedToken) {
-            compareUrl = `/api/embed/analytics?token=${encodeURIComponent(config.embedToken)}&fromDate=${compRange.from}&toDate=${compRange.to}`;
-          } else {
-            compareUrl = `/api/analytics/${clubId}?fromDate=${compRange.from}&toDate=${compRange.to}`;
-          }
+          // Build comparison params (same filters, different dates)
+          const compParams = new URLSearchParams(filterStr);
+          compParams.set('fromDate', compRange.from);
+          compParams.set('toDate', compRange.to);
+          compareUrl = buildAnalyticsUrl(compParams.toString());
         }
 
         // Fetch primary (and comparison if needed) in parallel
@@ -658,31 +719,17 @@
         const responses = await Promise.all(fetches);
 
         if (!responses[0].ok) throw new Error('Failed to load analytics');
-        rawAnalytics = await responses[0].json();
-        // Backend sends entries separately — attach as rawEntries for filtering/export
-        if (rawAnalytics.entries) {
-          rawAnalytics.rawEntries = rawAnalytics.entries;
-          delete rawAnalytics.entries;
-        } else {
-          // Large dataset — no entries sent, use empty array (analytics-only mode)
-          rawAnalytics.rawEntries = [];
-        }
+        analytics = await responses[0].json();
 
         if (comparisonMode && responses[1]) {
           if (!responses[1].ok) throw new Error('Failed to load comparison data');
-          compareRawAnalytics = await responses[1].json();
-          if (compareRawAnalytics.entries) {
-            compareRawAnalytics.rawEntries = compareRawAnalytics.entries;
-            delete compareRawAnalytics.entries;
-          } else {
-            compareRawAnalytics.rawEntries = [];
-          }
+          compareAnalytics = await responses[1].json();
         } else {
-          compareRawAnalytics = null;
+          compareAnalytics = null;
         }
 
-        // Initialize sites
-        allSites = rawAnalytics.sites || [];
+        // Initialize sites from response
+        allSites = analytics.sites || [];
         selectedSites = new Set(allSites.map(s => String(s.id)));
 
         // Show/hide site filter and chart based on number of sites
@@ -690,317 +737,95 @@
         document.getElementById('site-filter-container').classList.toggle('hidden', !showSites);
         document.getElementById('site-chart-container').classList.toggle('hidden', !showSites);
 
-        // Initialize doors (normalize IDs to strings for consistent comparison)
-        allDoors = rawAnalytics.byDoor || [];
+        // Initialize doors from byDoor
+        allDoors = analytics.byDoor || [];
         selectedDoors = new Set(allDoors.map(d => String(d.id)));
 
         // Initialize cards from byCardType
-        allCards = (rawAnalytics.byCardType || []).map(c => c.name);
+        allCards = (analytics.byCardType || []).map(c => c.name);
         selectedCards = new Set(allCards);
 
-        // Show/hide large dataset banner and toggle filter controls
-        const largeDataset = !rawAnalytics.entriesIncluded;
-        document.getElementById('large-dataset-banner').classList.toggle('hidden', !largeDataset);
-
-        // Apply filters and render
-        applyFilters();
+        // Render everything
+        renderDashboard();
         showState('analytics');
+
+        // After first render, allow filter changes to trigger requests
+        isInitialLoad = false;
       } catch (error) {
         console.error('Analytics error:', error);
         showError(error.message);
       }
     }
 
-    // ===== FILTERING =====
-    function applyFilters() {
-      if (!rawAnalytics) return;
+    // Called when a filter changes (debounced server request)
+    function onFilterChange() {
+      if (isInitialLoad) return; // Don't trigger during initialization
+      if (!analytics) return;
 
-      // Large dataset mode — entries not sent, use server-computed analytics directly
-      if (!rawAnalytics.entriesIncluded) {
-        currentPage = 1;
-        analytics = {
-          summary: rawAnalytics.summary,
-          byHour: rawAnalytics.byHour,
-          byDay: rawAnalytics.byDay,
-          byDoor: rawAnalytics.byDoor,
-          byCardType: rawAnalytics.byCardType,
-          dailyTrend: rawAnalytics.dailyTrend,
-          topVisitors: rawAnalytics.topVisitors,
-          failedReasons: rawAnalytics.failedReasons,
-          rawEntries: [],
-          club: rawAnalytics.club,
-          dateRange: rawAnalytics.dateRange
-        };
-        if (comparisonMode && compareRawAnalytics) {
-          compareAnalytics = {
-            summary: compareRawAnalytics.summary,
-            byHour: compareRawAnalytics.byHour,
-            byDay: compareRawAnalytics.byDay,
-            byDoor: compareRawAnalytics.byDoor,
-            byCardType: compareRawAnalytics.byCardType,
-            dailyTrend: compareRawAnalytics.dailyTrend,
-            topVisitors: compareRawAnalytics.topVisitors,
-            failedReasons: compareRawAnalytics.failedReasons,
-            rawEntries: []
-          };
+      // Debounce: wait 300ms before sending request
+      clearTimeout(filterDebounceTimer);
+      filterDebounceTimer = setTimeout(() => {
+        loadFilteredAnalytics();
+      }, 300);
+    }
+
+    // Fetch filtered analytics from server
+    async function loadFilteredAnalytics() {
+      if (!analytics) return;
+
+      // Show loading indicator
+      const filterLoading = document.getElementById('filter-loading');
+      filterLoading.classList.remove('hidden');
+      filterLoading.classList.add('flex');
+
+      currentPage = 1;
+
+      try {
+        const filterStr = buildFilterParams();
+        const url = buildAnalyticsUrl(filterStr);
+
+        // Also fetch comparison if in comparison mode
+        let compareUrl = null;
+        if (comparisonMode) {
+          const fromDate = document.getElementById('from-date').value;
+          const toDate = document.getElementById('to-date').value;
+          const compType = document.getElementById('comparison-type').value;
+          const compRange = getComparisonRange(fromDate, toDate, compType);
+          if (compRange.from && compRange.to) {
+            const compParams = new URLSearchParams(filterStr);
+            compParams.set('fromDate', compRange.from);
+            compParams.set('toDate', compRange.to);
+            compareUrl = buildAnalyticsUrl(compParams.toString());
+          }
+        }
+
+        const fetches = [fetch(url)];
+        if (compareUrl) fetches.push(fetch(compareUrl));
+        const responses = await Promise.all(fetches);
+
+        if (!responses[0].ok) throw new Error('Failed to load filtered analytics');
+        analytics = await responses[0].json();
+
+        if (comparisonMode && responses[1] && responses[1].ok) {
+          compareAnalytics = await responses[1].json();
         } else {
           compareAnalytics = null;
         }
+
         renderDashboard();
-        return;
+      } catch (error) {
+        console.error('Filter analytics error:', error);
+      } finally {
+        filterLoading.classList.add('hidden');
+        filterLoading.classList.remove('flex');
       }
-
-      const statusFilter = document.getElementById('status-filter').value;
-
-      // Filter raw entries
-      let filteredEntries = rawAnalytics.rawEntries.filter(e => {
-        // Site filter (entry has array of site IDs)
-        if (allSites.length > 1) {
-          if (selectedSites.size === 0) return false;
-          const entrySites = (e.sites || []).map(String);
-          if (entrySites.length > 0 && !entrySites.some(s => selectedSites.has(s))) {
-            return false;
-          }
-        }
-
-        // Door filter (normalize to string for comparison)
-        const doorId = e.door != null ? String(e.door) : 'unknown';
-        if (!selectedDoors.has(doorId)) {
-          return false;
-        }
-
-        // Card filter
-        if (selectedCards.size === 0) return false;
-        const cardName = e.cardName || 'Unknown';
-        if (!selectedCards.has(cardName)) return false;
-
-        // Status filter
-        if (statusFilter === 'success' && !e.success) return false;
-        if (statusFilter === 'failed' && e.success) return false;
-
-        return true;
-      });
-
-      // Unique visits deduplication (AFTER door/status filters)
-      // Keeps only one entry per user per day
-      if (uniqueVisitsOnly) {
-        filteredEntries = deduplicateByUserAndDate(filteredEntries);
-      }
-
-      // Reset pagination and recalculate analytics from filtered entries
-      currentPage = 1;
-      analytics = recalculateAnalytics(filteredEntries);
-      analytics.club = rawAnalytics.club;
-      analytics.dateRange = rawAnalytics.dateRange;
-
-      // Also filter comparison data if in comparison mode
-      if (comparisonMode && compareRawAnalytics) {
-        compareAnalytics = applyFiltersToRaw(compareRawAnalytics);
-      } else {
-        compareAnalytics = null;
-      }
-
-      renderDashboard();
-    }
-
-    function toggleUniqueVisits() {
-      uniqueVisitsOnly = document.getElementById('unique-visits-toggle').checked;
-      applyFilters();
-    }
-
-    function deduplicateByUserAndDate(entries) {
-      // Group entries by user_id + date, keep only the first entry per combination
-      // IMPORTANT: Only deduplicate entries WITH a userId - entries without userId
-      // are different people/cards and should all be kept
-      const seen = new Set();
-      const deduplicated = [];
-
-      // Sort by time ascending so we keep the first entry of the day
-      const sorted = [...entries].sort((a, b) => a.entryTime.localeCompare(b.entryTime));
-
-      sorted.forEach(entry => {
-        const userId = entry.userId;
-
-        // If no userId, keep the entry (don't deduplicate anonymous/failed entries)
-        if (!userId) {
-          deduplicated.push(entry);
-          return;
-        }
-
-        // Extract date using proper Date parsing (handles both ISO and space-separated formats)
-        const date = new Date(entry.entryTime).toISOString().split('T')[0];
-        const key = `${userId}_${date}`;
-
-        if (!seen.has(key)) {
-          seen.add(key);
-          deduplicated.push(entry);
-        }
-      });
-
-      return deduplicated;
-    }
-
-    function recalculateAnalytics(entries) {
-      // Similar to backend processing but client-side
-      const totalEntries = entries.length;
-      const successfulEntries = entries.filter(e => e.success).length;
-      const failedEntries = entries.filter(e => !e.success).length;
-      const successRate = totalEntries > 0 ? ((successfulEntries / totalEntries) * 100).toFixed(1) : 0;
-
-      const uniqueVisitorIds = new Set(entries.filter(e => e.userId).map(e => e.userId));
-      const uniqueVisitors = uniqueVisitorIds.size;
-
-      const uniqueDates = new Set(entries.map(e => new Date(e.entryTime).toISOString().split('T')[0]));
-      const avgEntriesPerDay = uniqueDates.size > 0 ? (totalEntries / uniqueDates.size).toFixed(1) : 0;
-
-      // By hour
-      const hourCounts = {};
-      for (let h = 0; h <= 23; h++) {
-        hourCounts[h] = { total: 0, successful: 0 };
-      }
-      entries.forEach(e => {
-        const hour = new Date(e.entryTime).getHours();
-        hourCounts[hour].total++;
-        if (e.success) hourCounts[hour].successful++;
-      });
-      const byHour = Object.entries(hourCounts).map(([hour, data]) => ({
-        hour: parseInt(hour),
-        label: `${hour.toString().padStart(2, '0')}:00`,
-        total: data.total,
-        successful: data.successful,
-        successRate: data.total > 0 ? ((data.successful / data.total) * 100).toFixed(1) : 0
-      }));
-
-      const peakHourData = byHour.reduce((max, h) => h.total > max.total ? h : max, { total: 0 });
-      const peakHour = peakHourData.total > 0 ? peakHourData.label : null;
-
-      // By day
-      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-      const dayCounts = {};
-      dayNames.forEach((name, idx) => {
-        dayCounts[idx] = { name, total: 0, successful: 0 };
-      });
-      entries.forEach(e => {
-        const day = new Date(e.entryTime).getDay();
-        dayCounts[day].total++;
-        if (e.success) dayCounts[day].successful++;
-      });
-      const byDay = Object.entries(dayCounts).map(([dayIdx, data]) => ({
-        day: data.name,
-        dayIndex: parseInt(dayIdx),
-        total: data.total,
-        successful: data.successful,
-        successRate: data.total > 0 ? ((data.successful / data.total) * 100).toFixed(1) : 0
-      }));
-
-      const peakDayData = byDay.reduce((max, d) => d.total > max.total ? d : max, { total: 0 });
-      const peakDay = peakDayData.total > 0 ? peakDayData.day : null;
-
-      // By door
-      const doorCounts = {};
-      entries.forEach(e => {
-        const doorId = e.door || 'unknown';
-        const doorName = e.doorName || `Door ${doorId}`;
-        if (!doorCounts[doorId]) {
-          doorCounts[doorId] = { id: doorId, name: doorName, total: 0, successful: 0 };
-        }
-        doorCounts[doorId].total++;
-        if (e.success) doorCounts[doorId].successful++;
-      });
-      const byDoor = Object.values(doorCounts)
-        .map(d => ({ ...d, successRate: d.total > 0 ? ((d.successful / d.total) * 100).toFixed(1) : 0 }))
-        .sort((a, b) => b.total - a.total);
-
-      // By card type
-      const cardCounts = {};
-      entries.forEach(e => {
-        const cardName = e.cardName || 'Unknown';
-        if (!cardCounts[cardName]) {
-          cardCounts[cardName] = { name: cardName, total: 0, successful: 0 };
-        }
-        cardCounts[cardName].total++;
-        if (e.success) cardCounts[cardName].successful++;
-      });
-      const byCardType = Object.values(cardCounts)
-        .map(c => ({ ...c, successRate: c.total > 0 ? ((c.successful / c.total) * 100).toFixed(1) : 0 }))
-        .sort((a, b) => b.total - a.total);
-
-      // Daily trend
-      const dailyCounts = {};
-      entries.forEach(e => {
-        const date = new Date(e.entryTime).toISOString().split('T')[0];
-        if (!dailyCounts[date]) {
-          dailyCounts[date] = { date, total: 0, successful: 0, uniqueVisitors: new Set() };
-        }
-        dailyCounts[date].total++;
-        if (e.success) dailyCounts[date].successful++;
-        if (e.userId) dailyCounts[date].uniqueVisitors.add(e.userId);
-      });
-      const dailyTrend = Object.values(dailyCounts)
-        .map(d => ({
-          date: d.date,
-          total: d.total,
-          successful: d.successful,
-          uniqueVisitors: d.uniqueVisitors.size,
-          successRate: d.total > 0 ? ((d.successful / d.total) * 100).toFixed(1) : 0
-        }))
-        .sort((a, b) => a.date.localeCompare(b.date));
-
-      // Top visitors
-      const visitorCounts = {};
-      entries.forEach(e => {
-        if (e.userId) {
-          if (!visitorCounts[e.userId]) {
-            visitorCounts[e.userId] = { id: e.userId, name: e.memberName || `Member #${e.userId}`, entries: 0, lastVisit: null };
-          }
-          visitorCounts[e.userId].entries++;
-          const entryDate = new Date(e.entryTime).toISOString().split('T')[0];
-          if (!visitorCounts[e.userId].lastVisit || entryDate > visitorCounts[e.userId].lastVisit) {
-            visitorCounts[e.userId].lastVisit = entryDate;
-          }
-        }
-      });
-      const topVisitors = Object.values(visitorCounts)
-        .sort((a, b) => b.entries - a.entries)
-        .slice(0, 20);
-
-      // Failed reasons
-      const reasonCounts = {};
-      entries.filter(e => !e.success && e.reason).forEach(e => {
-        if (!reasonCounts[e.reason]) {
-          reasonCounts[e.reason] = { reason: e.reason, count: 0 };
-        }
-        reasonCounts[e.reason].count++;
-      });
-      const failedReasons = Object.values(reasonCounts).sort((a, b) => b.count - a.count);
-
-      return {
-        summary: {
-          totalEntries,
-          successfulEntries,
-          failedEntries,
-          successRate: parseFloat(successRate),
-          uniqueVisitors,
-          avgEntriesPerDay: parseFloat(avgEntriesPerDay),
-          peakHour,
-          peakDay
-        },
-        byHour,
-        byDay,
-        byDoor,
-        byCardType,
-        dailyTrend,
-        topVisitors,
-        failedReasons,
-        rawEntries: entries
-      };
     }
 
     // ===== RENDERING =====
     function renderDashboard() {
       if (!analytics) return;
 
-      const { summary, byHour, byDay, byDoor, byCardType, dailyTrend, topVisitors, failedReasons, rawEntries, club, dateRange } = analytics;
+      const { summary, byHour, byDay, byDoor, byCardType, dailyTrend, topVisitors, failedReasons, club, dateRange } = analytics;
 
       // Header info
       document.getElementById('club-name').textContent = club?.name || 'Unknown Gym';
@@ -1036,8 +861,8 @@
       // Render site filter and chart
       if (allSites.length > 1) {
         renderSiteFilter();
-        renderSiteDistributionChart(rawEntries);
       }
+      renderSiteDistributionChart();
 
       // Render door and card filters
       renderDoorFilter();
@@ -1053,7 +878,9 @@
       // Render tables
       renderTopVisitors(topVisitors);
       renderFailedReasons(failedReasons);
-      renderEntriesTable(rawEntries);
+
+      // Render entries table from server-paginated data
+      renderEntriesTable();
     }
 
     function renderDoorFilter() {
@@ -1085,21 +912,21 @@
         selectedDoors.add(doorId);
       }
       updateDoorFilterLabel();
-      applyFilters();
+      onFilterChange();
     }
 
     function selectAllDoors() {
       selectedDoors = new Set(allDoors.map(d => String(d.id)));
       document.querySelectorAll('#door-checkboxes input').forEach(cb => cb.checked = true);
       updateDoorFilterLabel();
-      applyFilters();
+      onFilterChange();
     }
 
     function clearAllDoors() {
       selectedDoors.clear();
       document.querySelectorAll('#door-checkboxes input').forEach(cb => cb.checked = false);
       updateDoorFilterLabel();
-      applyFilters();
+      onFilterChange();
     }
 
     function updateDoorFilterLabel() {
@@ -1162,21 +989,21 @@
         selectedSites.add(siteId);
       }
       updateSiteFilterLabel();
-      applyFilters();
+      onFilterChange();
     }
 
     function selectAllSites() {
       selectedSites = new Set(allSites.map(s => String(s.id)));
       document.querySelectorAll('#site-checkboxes input').forEach(cb => cb.checked = true);
       updateSiteFilterLabel();
-      applyFilters();
+      onFilterChange();
     }
 
     function clearAllSites() {
       selectedSites.clear();
       document.querySelectorAll('#site-checkboxes input').forEach(cb => cb.checked = false);
       updateSiteFilterLabel();
-      applyFilters();
+      onFilterChange();
     }
 
     function updateSiteFilterLabel() {
@@ -1200,9 +1027,9 @@
       const container = document.getElementById('card-checkboxes');
       container.innerHTML = '';
 
-      // Use allCards for checkbox list, but show counts from current raw data
+      // Use allCards for checkbox list, show counts from analytics
       const cardCounts = {};
-      (rawAnalytics.byCardType || []).forEach(c => { cardCounts[c.name] = c.total; });
+      (analytics?.byCardType || []).forEach(c => { cardCounts[c.name] = c.total; });
 
       allCards.forEach(cardName => {
         const div = document.createElement('div');
@@ -1242,21 +1069,21 @@
         selectedCards.add(cardName);
       }
       updateCardFilterLabel();
-      applyFilters();
+      onFilterChange();
     }
 
     function selectAllCards() {
       selectedCards = new Set(allCards);
       document.querySelectorAll('#card-checkboxes input').forEach(cb => cb.checked = true);
       updateCardFilterLabel();
-      applyFilters();
+      onFilterChange();
     }
 
     function clearAllCards() {
       selectedCards.clear();
       document.querySelectorAll('#card-checkboxes input').forEach(cb => cb.checked = false);
       updateCardFilterLabel();
-      applyFilters();
+      onFilterChange();
     }
 
     function updateCardFilterLabel() {
@@ -1274,33 +1101,26 @@
       document.getElementById('card-filter-container').classList.toggle('open');
     }
 
-    function renderSiteDistributionChart(entries) {
+    function renderSiteDistributionChart() {
       destroyChart('sites');
+
+      // Use bySite data from the analytics PG function
+      const bySite = analytics && analytics.bySite ? analytics.bySite : [];
+      if (bySite.length <= 1) {
+        document.getElementById('site-chart-container').classList.add('hidden');
+        return;
+      }
+
+      document.getElementById('site-chart-container').classList.remove('hidden');
+
       const ctx = document.getElementById('sites-chart').getContext('2d');
-
-      // Count entries per site
-      const siteMap = {};
-      allSites.forEach(s => { siteMap[String(s.id)] = { name: s.name, count: 0 }; });
-
-      entries.forEach(e => {
-        const entrySites = (e.sites || []).map(String);
-        entrySites.forEach(sId => {
-          if (siteMap[sId]) {
-            siteMap[sId].count++;
-          }
-        });
-      });
-
-      const siteData = Object.values(siteMap).filter(s => s.count > 0).sort((a, b) => b.count - a.count);
-      const totalEntries = siteData.reduce((sum, s) => sum + s.count, 0);
-
       charts['sites'] = new Chart(ctx, {
         type: 'doughnut',
         data: {
-          labels: siteData.map(s => s.name),
+          labels: bySite.map(s => s.name),
           datasets: [{
-            data: siteData.map(s => s.count),
-            backgroundColor: chartColors.purple.slice(0, siteData.length),
+            data: bySite.map(s => s.count),
+            backgroundColor: chartColors.purple.slice(0, bySite.length),
             borderWidth: 0
           }]
         },
@@ -1312,9 +1132,9 @@
             tooltip: {
               callbacks: {
                 label: function(context) {
-                  const value = context.raw;
-                  const pct = totalEntries > 0 ? ((value / totalEntries) * 100).toFixed(1) : 0;
-                  return `${context.label}: ${value.toLocaleString()} (${pct}%)`;
+                  const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                  const pct = total > 0 ? ((context.raw / total) * 100).toFixed(1) : 0;
+                  return `${context.label}: ${context.raw.toLocaleString()} (${pct}%)`;
                 }
               }
             }
@@ -1342,7 +1162,6 @@
         toggle.classList.remove('border-strongsales-300');
         panel.classList.add('hidden');
         panel.classList.remove('flex');
-        compareRawAnalytics = null;
         compareAnalytics = null;
         document.getElementById('period-badges').classList.add('hidden');
         hideDeltas();
@@ -1431,36 +1250,6 @@
       });
     }
 
-    function applyFiltersToRaw(raw) {
-      if (!raw) return null;
-      const statusFilter = document.getElementById('status-filter').value;
-
-      let filtered = raw.rawEntries.filter(e => {
-        if (allSites.length > 1) {
-          if (selectedSites.size === 0) return false;
-          const entrySites = (e.sites || []).map(String);
-          if (entrySites.length > 0 && !entrySites.some(s => selectedSites.has(s))) return false;
-        }
-        const doorId = e.door != null ? String(e.door) : 'unknown';
-        if (!selectedDoors.has(doorId)) return false;
-        if (selectedCards.size === 0) return false;
-        const cardName = e.cardName || 'Unknown';
-        if (!selectedCards.has(cardName)) return false;
-        if (statusFilter === 'success' && !e.success) return false;
-        if (statusFilter === 'failed' && e.success) return false;
-        return true;
-      });
-
-      if (uniqueVisitsOnly) {
-        filtered = deduplicateByUserAndDate(filtered);
-      }
-
-      const result = recalculateAnalytics(filtered);
-      result.club = raw.club;
-      result.dateRange = raw.dateRange;
-      return result;
-    }
-
     // ===== DROPDOWN SEARCH =====
     function filterDropdownItems(type) {
       const query = document.getElementById(`${type}-search`).value.toLowerCase();
@@ -1497,11 +1286,11 @@
         }
       });
 
-      // Update label and apply filters once
+      // Update label and trigger filter
       if (type === 'door') updateDoorFilterLabel();
       else if (type === 'site') updateSiteFilterLabel();
       else if (type === 'card') updateCardFilterLabel();
-      applyFilters();
+      onFilterChange();
     }
 
     // ===== CHARTS =====
@@ -1809,34 +1598,39 @@
       }).join('') + '</div>';
     }
 
-    function renderEntriesTable(entries) {
+    // Render entries table from server-paginated data
+    function renderEntriesTable() {
       const tbody = document.getElementById('entries-table');
       const countEl = document.getElementById('entries-count');
       const paginationEl = document.getElementById('entries-pagination');
 
-      // Sort by time descending
-      const sorted = [...entries].sort((a, b) => b.entryTime.localeCompare(a.entryTime));
+      const pageData = analytics?.entriesPage;
+      const entries = analytics?.entries || [];
 
-      countEl.textContent = `${sorted.length.toLocaleString()} entries`;
+      if (!pageData) {
+        countEl.textContent = '';
+        tbody.innerHTML = '<tr><td colspan="5" class="py-8 text-center text-gray-400">No entries available</td></tr>';
+        paginationEl.innerHTML = '';
+        return;
+      }
 
-      // Pagination
-      const totalPages = Math.ceil(sorted.length / entriesPerPage);
-      const start = (currentPage - 1) * entriesPerPage;
-      const pageEntries = sorted.slice(start, start + entriesPerPage);
+      countEl.textContent = `Page ${pageData.page} of ${pageData.totalPages} (${pageData.total.toLocaleString()} total entries)`;
 
       tbody.innerHTML = '';
 
-      if (pageEntries.length === 0) {
+      if (entries.length === 0) {
         tbody.innerHTML = '<tr><td colspan="5" class="py-8 text-center text-gray-400">No entries found</td></tr>';
         paginationEl.innerHTML = '';
         return;
       }
 
-      pageEntries.forEach(entry => {
+      entries.forEach(entry => {
         const tr = document.createElement('tr');
         tr.className = 'border-b border-gray-50 hover:bg-gray-50 transition-colors';
+        // Format entryTime for display
+        const timeStr = entry.entryTime ? new Date(entry.entryTime).toLocaleString('sv-SE') : '-';
         tr.innerHTML = `
-          <td class="py-3 text-sm text-gray-600">${entry.entryTime}</td>
+          <td class="py-3 text-sm text-gray-600">${timeStr}</td>
           <td class="py-3 text-sm text-gray-900 font-medium">${entry.memberName || '-'}</td>
           <td class="py-3 text-sm text-gray-600">${entry.doorName || '-'}</td>
           <td class="py-3 text-sm text-gray-600">${entry.cardName || '-'}</td>
@@ -1850,15 +1644,15 @@
       });
 
       // Pagination controls
-      if (totalPages > 1) {
+      if (pageData.totalPages > 1) {
         paginationEl.innerHTML = `
-          <button onclick="goToPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}
-            class="px-3 py-1 text-sm rounded-lg ${currentPage === 1 ? 'text-gray-300 cursor-not-allowed' : 'text-gray-600 hover:bg-gray-100'}">
+          <button onclick="goToPage(${pageData.page - 1})" ${pageData.page === 1 ? 'disabled' : ''}
+            class="px-3 py-1 text-sm rounded-lg ${pageData.page === 1 ? 'text-gray-300 cursor-not-allowed' : 'text-gray-600 hover:bg-gray-100'}">
             Prev
           </button>
-          <span class="text-sm text-gray-500">Page ${currentPage} of ${totalPages}</span>
-          <button onclick="goToPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}
-            class="px-3 py-1 text-sm rounded-lg ${currentPage === totalPages ? 'text-gray-300 cursor-not-allowed' : 'text-gray-600 hover:bg-gray-100'}">
+          <span class="text-sm text-gray-500">Page ${pageData.page} of ${pageData.totalPages}</span>
+          <button onclick="goToPage(${pageData.page + 1})" ${pageData.page === pageData.totalPages ? 'disabled' : ''}
+            class="px-3 py-1 text-sm rounded-lg ${pageData.page === pageData.totalPages ? 'text-gray-300 cursor-not-allowed' : 'text-gray-600 hover:bg-gray-100'}">
             Next
           </button>
         `;
@@ -1867,9 +1661,36 @@
       }
     }
 
-    function goToPage(page) {
+    // Navigate to a specific page (server-side pagination)
+    async function goToPage(page) {
+      if (!analytics) return;
+
       currentPage = page;
-      renderEntriesTable(analytics.rawEntries);
+
+      // Show loading on the entries table
+      const filterLoading = document.getElementById('filter-loading');
+      filterLoading.classList.remove('hidden');
+      filterLoading.classList.add('flex');
+
+      try {
+        const filterStr = buildFilterParams();
+        const url = buildAnalyticsUrl(filterStr);
+
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Failed to load page');
+        const data = await response.json();
+
+        // Update only the entries part
+        analytics.entries = data.entries;
+        analytics.entriesPage = data.entriesPage;
+
+        renderEntriesTable();
+      } catch (error) {
+        console.error('Pagination error:', error);
+      } finally {
+        filterLoading.classList.add('hidden');
+        filterLoading.classList.remove('flex');
+      }
     }
 
     // ===== UI HELPERS =====
@@ -1913,31 +1734,20 @@
 
     // ===== EXPORT =====
     function exportCSV() {
-      if (!analytics || !analytics.rawEntries) {
+      if (!analytics) {
         alert('No data to export');
         return;
       }
 
-      const headers = ['Time', 'User ID', 'Member', 'Door', 'Card Type', 'Status', 'Reason'];
-      const rows = analytics.rawEntries.map(e => [
-        e.entryTime,
-        e.userId || '',
-        e.memberName || '',
-        e.doorName || '',
-        e.cardName || '',
-        e.success ? 'Success' : 'Failed',
-        e.reason || ''
-      ]);
+      const clubId = config.presetClubId || document.getElementById('gym-select').value;
+      const filterStr = buildFilterParams();
 
-      const csv = [headers, ...rows].map(row =>
-        row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')
-      ).join('\n');
-
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = `entry-analytics-${analytics.club?.name || 'export'}-${analytics.dateRange?.fromDate}-${analytics.dateRange?.toDate}.csv`;
-      link.click();
+      // Open CSV export URL in a new tab
+      if (config.isSecureEmbed && config.embedToken) {
+        window.open(`/api/embed/export.csv?token=${encodeURIComponent(config.embedToken)}&${filterStr}`, '_blank');
+      } else {
+        window.open(`/api/analytics/${clubId}/export.csv?${filterStr}`, '_blank');
+      }
     }
   </script>
 </body>
