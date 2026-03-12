@@ -792,15 +792,13 @@
 
       // By hour
       const hourCounts = {};
-      for (let h = 5; h <= 23; h++) {
+      for (let h = 0; h <= 23; h++) {
         hourCounts[h] = { total: 0, successful: 0 };
       }
       entries.forEach(e => {
         const hour = new Date(e.entryTime).getHours();
-        if (hour >= 5 && hour <= 23) {
-          hourCounts[hour].total++;
-          if (e.success) hourCounts[hour].successful++;
-        }
+        hourCounts[hour].total++;
+        if (e.success) hourCounts[hour].successful++;
       });
       const byHour = Object.entries(hourCounts).map(([hour, data]) => ({
         hour: parseInt(hour),
