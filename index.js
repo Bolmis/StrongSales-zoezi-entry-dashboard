@@ -183,7 +183,7 @@ async function fetchZoeziEntries(domain, apiKey, fromDate, toDate) {
     data: (entries || []).map(e => ({
       entryTime: e.entryTime,
       success: e.success !== false,
-      userId: e.userId || e.member_id,
+      userId: e.user_id || e.member_id,
       memberName: null, // Not available with idOnly, but we have userId
       door: e.door,
       doorName: `Door ${e.door}`, // Will be enriched later if door names are fetched
@@ -415,6 +415,28 @@ function processEntryAnalytics(apiResponse) {
   };
 }
 
+// Stream a JSON response with a large entries array without building the full string in memory.
+// Serializes each entry individually so peak memory stays low even for 300k+ entries.
+function streamAnalyticsResponse(res, analytics, entries, club, sites, dateRange) {
+  res.setHeader('Content-Type', 'application/json');
+
+  // Build the response object without entries, serialize that small piece
+  const envelope = { ...analytics, club, sites, dateRange };
+  const json = JSON.stringify(envelope);
+
+  // Insert the entries array before the closing brace
+  res.write(json.slice(0, -1)); // everything except final "}"
+  res.write(',"entries":[');
+
+  for (let i = 0; i < entries.length; i++) {
+    if (i > 0) res.write(',');
+    res.write(JSON.stringify(entries[i]));
+  }
+
+  res.write(']}');
+  res.end();
+}
+
 // ========== ROUTES ==========
 
 // Health check
@@ -565,18 +587,10 @@ app.get('/api/analytics/:clubId', isAuthenticated, async (req, res) => {
     // Process analytics (without rawEntries to save memory)
     const analytics = processEntryAnalytics(entriesResponse);
 
-    // Reuse normalized array directly — no extra copy
-    res.json({
-      ...analytics,
-      entries: entriesResponse.data,
-      club: {
-        id: club.Club_Zoezi_ID,
-        name: club.Club_name,
-        domain: club.Zoezi_Domain
-      },
-      sites,
-      dateRange: { fromDate, toDate }
-    });
+    // Stream response — serializes entries one-by-one to avoid OOM on JSON.stringify
+    streamAnalyticsResponse(res, analytics, entriesResponse.data,
+      { id: club.Club_Zoezi_ID, name: club.Club_name, domain: club.Zoezi_Domain },
+      sites, { fromDate, toDate });
   } catch (error) {
     console.error('Error fetching analytics:', error);
     res.status(500).json({ error: 'Failed to fetch analytics', message: error.message });
@@ -657,18 +671,10 @@ app.get('/api/embed/analytics', async (req, res) => {
     // Process analytics (without rawEntries to save memory)
     const analytics = processEntryAnalytics(entriesResponse);
 
-    // Reuse normalized array directly — no extra copy
-    res.json({
-      ...analytics,
-      entries: entriesResponse.data,
-      club: {
-        id: club.Club_Zoezi_ID,
-        name: club.Club_name,
-        domain: club.Zoezi_Domain
-      },
-      sites,
-      dateRange: { fromDate, toDate }
-    });
+    // Stream response — serializes entries one-by-one to avoid OOM on JSON.stringify
+    streamAnalyticsResponse(res, analytics, entriesResponse.data,
+      { id: club.Club_Zoezi_ID, name: club.Club_name, domain: club.Zoezi_Domain },
+      sites, { fromDate, toDate });
   } catch (error) {
     console.error('Embed analytics error:', error);
     res.status(500).json({ error: 'Failed to fetch analytics', message: error.message });
