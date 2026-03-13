@@ -75,6 +75,7 @@ CREATE OR REPLACE FUNCTION get_entry_analytics(
   p_unique_visits boolean DEFAULT false
 ) RETURNS jsonb
 LANGUAGE plpgsql
+SET statement_timeout = '120s'
 AS $$
 DECLARE
   v_result jsonb;
@@ -94,9 +95,20 @@ DECLARE
   v_peak_hour text;
   v_peak_day text;
 BEGIN
-  -- Create temp table with filtered entries
+  -- Create narrow temp table (only columns needed for aggregations)
   CREATE TEMP TABLE _filtered ON COMMIT DROP AS
-  SELECT e.*
+  SELECT
+    COALESCE(e.user_id, e.member_id) AS visitor_id,
+    e.entry_date,
+    e.entry_hour,
+    e.entry_dow,
+    e.entry_time,
+    e.success,
+    e.door_id,
+    e.card_name,
+    e.reason,
+    e.site_ids,
+    e.club_id
   FROM entry_events e
   WHERE e.club_id = p_club_id
     AND e.entry_date BETWEEN p_from_date AND p_to_date
@@ -109,31 +121,34 @@ BEGIN
       OR (p_status = 'failed' AND e.success = false)
     );
 
-  -- If unique visits, deduplicate: keep one entry per user per day
-  -- Entries without a user_id are always kept
+  -- Give the planner stats on the temp table
+  ANALYZE _filtered;
+
+  -- If unique visits, deduplicate: keep one entry per visitor per day
   IF p_unique_visits THEN
     CREATE TEMP TABLE _deduped ON COMMIT DROP AS
     (
       -- Entries without any visitor ID: keep all
-      SELECT * FROM _filtered WHERE COALESCE(user_id, member_id) IS NULL
+      SELECT * FROM _filtered WHERE visitor_id IS NULL
     )
     UNION ALL
     (
       -- Entries with visitor ID: keep earliest per visitor per day
-      SELECT DISTINCT ON (COALESCE(user_id, member_id), entry_date) *
+      SELECT DISTINCT ON (visitor_id, entry_date) *
       FROM _filtered
-      WHERE COALESCE(user_id, member_id) IS NOT NULL
-      ORDER BY COALESCE(user_id, member_id), entry_date, entry_time ASC
+      WHERE visitor_id IS NOT NULL
+      ORDER BY visitor_id, entry_date, entry_time ASC
     );
 
     DROP TABLE _filtered;
     ALTER TABLE _deduped RENAME TO _filtered;
+    ANALYZE _filtered;
   END IF;
 
-  -- Summary counts (use COALESCE(user_id, member_id) as visitor_id throughout)
+  -- Summary counts (use visitor_id as visitor_id throughout)
   SELECT count(*), coalesce(sum(CASE WHEN success THEN 1 ELSE 0 END), 0),
          coalesce(sum(CASE WHEN NOT success THEN 1 ELSE 0 END), 0),
-         count(DISTINCT COALESCE(user_id, member_id)),
+         count(DISTINCT visitor_id),
          count(DISTINCT entry_date)
   INTO v_total, v_successful, v_failed, v_unique_visitors, v_num_days
   FROM _filtered;
@@ -267,7 +282,7 @@ BEGIN
              'date', entry_date::text,
              'total', count(*),
              'successful', sum(CASE WHEN success THEN 1 ELSE 0 END),
-             'uniqueVisitors', count(DISTINCT COALESCE(user_id, member_id)),
+             'uniqueVisitors', count(DISTINCT visitor_id),
              'successRate', CASE WHEN count(*) > 0
                THEN round((sum(CASE WHEN success THEN 1 ELSE 0 END)::numeric / count(*) * 100), 1)::text
                ELSE '0' END
@@ -281,15 +296,15 @@ BEGIN
   INTO v_top_visitors
   FROM (
     SELECT jsonb_build_object(
-             'id', COALESCE(user_id, member_id),
-             'name', 'Member #' || COALESCE(user_id, member_id),
+             'id', visitor_id,
+             'name', 'Member #' || visitor_id,
              'entries', count(*),
              'lastVisit', max(entry_date)::text
            ) AS row_data,
            count(*) AS entries
     FROM _filtered
-    WHERE COALESCE(user_id, member_id) IS NOT NULL
-    GROUP BY COALESCE(user_id, member_id)
+    WHERE visitor_id IS NOT NULL
+    GROUP BY visitor_id
     ORDER BY count(*) DESC
     LIMIT 20
   ) sub;
@@ -354,6 +369,7 @@ CREATE OR REPLACE FUNCTION get_entry_page(
   p_limit int DEFAULT 20
 ) RETURNS jsonb
 LANGUAGE plpgsql
+SET statement_timeout = '120s'
 AS $$
 DECLARE
   v_total bigint;
